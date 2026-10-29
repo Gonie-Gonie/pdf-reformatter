@@ -6,6 +6,7 @@ import fontkit from '@pdf-lib/fontkit';
 import { analyzeDocument, applyOverrides } from '../../core/analyze';
 import { layoutDocument } from '../../core/layout';
 import { validateConfig } from '../../core/config';
+import { collectCriticalIssues } from '../../core/issues';
 import type {
   ConversionResult,
   LayoutConfig,
@@ -15,7 +16,6 @@ import type {
   Rect,
   SourceDocument,
   SourcePage,
-  VerificationReport,
 } from '../../core/model';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -193,11 +193,14 @@ export async function extractPdf(
   name: string,
   progress: ProgressCallback,
   password?: string,
+  pageLimit?: number,
 ): Promise<{ source: SourceDocument; reading: ReadingDocument }> {
   if (typeof OffscreenCanvas === 'undefined')
     throw new Error(
       '이 브라우저는 OffscreenCanvas를 지원하지 않습니다. 최신 Chrome 또는 Edge에서 열어 주세요.',
     );
+  if (pageLimit !== undefined && (!Number.isInteger(pageLimit) || pageLimit < 1))
+    throw new RangeError('분석할 페이지 수는 1 이상의 정수여야 합니다.');
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.slice().buffer))]
     .map((x) => x.toString(16).padStart(2, '0'))
     .join('');
@@ -211,12 +214,13 @@ export async function extractPdf(
     engine: `PDF.js ${version}`,
   };
   try {
-    for (let number = 1; number <= pdf.numPages; number++) {
+    const pageCount = Math.min(pageLimit ?? pdf.numPages, pdf.numPages);
+    for (let number = 1; number <= pageCount; number++) {
       progress({
         stage: 'extracting',
         current: number,
-        total: pdf.numPages,
-        message: `원문 ${number} / ${pdf.numPages}쪽 분석 중`,
+        total: pageCount,
+        message: `원문 ${number} / ${pageCount}쪽 분석 중`,
       });
       const page = await pdf.getPage(number),
         viewport = page.getViewport({ scale: 1 });
@@ -257,10 +261,33 @@ export async function extractPdf(
         }
       }
       const annotations = await page.getAnnotations({ intent: 'display' });
-      if (annotations.length)
-        sourcePage.warnings.push(
-          '주석·양식·링크는 원형 보존 영역의 보이는 모습만 반영하며 상호작용은 이전하지 않습니다.',
+      const omittedAnnotation = annotations.some((annotation) => {
+        if (
+          annotation.subtype === 'Link' ||
+          annotation.subtype === 'Popup' ||
+          annotation.hasAppearance ||
+          (annotation.annotationFlags & (1 | 2 | 32)) !== 0
+        )
+          return false;
+        return (
+          (annotation.subtype === 'Widget' &&
+            annotation.fieldValue !== undefined &&
+            annotation.fieldValue !== null &&
+            String(annotation.fieldValue).trim() !== '') ||
+          (annotation.subtype === 'Text' && Boolean(annotation.contentsObj?.str)) ||
+          annotation.subtype === 'FileAttachment'
         );
+      });
+      if (omittedAnnotation)
+        sourcePage.issues = [
+          {
+            id: `p${number}-unsupported-annotation`,
+            code: 'unsupported-annotation',
+            sourcePage: number,
+            message: '주석이나 양식의 내용이 결과에서 생략될 수 있습니다.',
+            rect: { x: 0, y: 0, width: sourcePage.width, height: sourcePage.height },
+          },
+        ];
       sourcePage.graphicRegions = sourcePage.items.length
         ? await detectGraphics(page, sourcePage)
         : [];
@@ -269,8 +296,8 @@ export async function extractPdf(
     }
     progress({
       stage: 'analyzing',
-      current: source.pageCount,
-      total: source.pageCount,
+      current: pageCount,
+      total: pageCount,
       message: '읽기 순서와 문단을 구성하는 중',
     });
     return { source, reading: analyzeDocument(source) };
@@ -297,14 +324,6 @@ async function fontBytes(name: string): Promise<Uint8Array> {
     );
   return fontCache.get(name)!;
 }
-const limitations = [
-  '규칙 기반 분석입니다. 복잡한 다단 문서·표·수식의 읽기 순서는 원문과 대조해 검토해야 합니다.',
-  '원문 보존 영역은 최대 3배 해상도의 이미지입니다. 해당 영역의 텍스트 선택·검색 및 벡터 특성은 유지되지 않습니다.',
-  'OCR, 원문 링크·책갈피·양식의 상호작용 이전, 원문의 전자서명 보존은 지원하지 않습니다.',
-  '검증은 원문 텍스트 항목의 처리 경로와 배치를 확인합니다. PDF에서 추출되지 않은 의미나 원본과의 시각적 동등성을 보증하지 않습니다.',
-  '영역 자르기는 보안 삭제 기능이 아닙니다. 원문 대조 합본에는 원문 페이지의 보이는 내용 전체가 포함됩니다.',
-];
-
 export async function exportPdf(
   bytes: Uint8Array,
   source: SourceDocument,
@@ -316,41 +335,72 @@ export async function exportPdf(
   password?: string,
 ): Promise<ConversionResult> {
   const config = validateConfig(inputConfig);
-  const range = selectedPages ?? source.pages.map((p) => p.number);
+  const scope = selectedPages ? ('preview' as const) : ('full' as const);
+  const range = selectedPages
+    ? [...selectedPages]
+    : Array.from({ length: source.pageCount }, (_, index) => index + 1);
   if (
     !range.length ||
     new Set(range).size !== range.length ||
-    range.some((n) => !Number.isInteger(n) || n < 1 || n > source.pageCount)
+    range.some((number) => !Number.isInteger(number) || number < 1 || number > source.pageCount)
   )
-    throw new Error('미리보기 페이지 범위가 올바르지 않습니다.');
-  const scope = selectedPages ? ('preview' as const) : ('full' as const);
-  const effective = applyOverrides(reading, overrides);
-  effective.blocks = effective.blocks.filter((b) => range.includes(b.sourcePage));
+    throw new Error('변환할 페이지 범위가 올바르지 않습니다.');
+  const availablePages = new Set(source.pages.map((page) => page.number));
+  if (range.some((number) => !availablePages.has(number))) {
+    const analyzed = await extractPdf(
+      bytes,
+      source.name,
+      progress,
+      password,
+      scope === 'preview' ? Math.max(...range) : undefined,
+    );
+    source = analyzed.source;
+    reading = analyzed.reading;
+  }
+  const selected = new Set(range);
+  const scopedSource: SourceDocument = {
+    ...source,
+    pages: source.pages.filter((page) => selected.has(page.number)),
+  };
+  const scopedReading: ReadingDocument = {
+    ...reading,
+    blocks: reading.blocks.filter((block) => selected.has(block.sourcePage)),
+  };
+  const effective = applyOverrides(scopedReading, overrides);
   if (!effective.blocks.length)
-    throw new Error('변환할 블록이 없습니다. 제외 설정을 확인해 주세요.');
+    throw new Error('변환할 내용이 없습니다. 제외 설정을 확인해 주세요.');
   for (const block of effective.blocks) {
-    const page = source.pages.find((p) => p.number === block.sourcePage);
-    const r = block.rect;
+    const page = scopedSource.pages.find((item) => item.number === block.sourcePage);
+    const rect = block.rect;
     if (
       !page ||
-      ![r.x, r.y, r.width, r.height].every(Number.isFinite) ||
-      r.width <= 0 ||
-      r.height <= 0 ||
-      r.x < -0.1 ||
-      r.y < -0.1 ||
-      r.x + r.width > page.width + 0.5 ||
-      r.y + r.height > page.height + 0.5 ||
+      ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      rect.x < -0.1 ||
+      rect.y < -0.1 ||
+      rect.x + rect.width > page.width + 0.5 ||
+      rect.y + rect.height > page.height + 0.5 ||
       block.sourceIds.some((id) => !page.items.some((item) => item.id === id))
-    ) {
-      throw new Error(
-        '원문과 작업 파일의 영역 정보가 일치하지 않습니다. 원본 PDF를 다시 분석해 주세요.',
-      );
-    }
+    )
+      throw new Error('원문 영역을 확인할 수 없습니다. PDF를 다시 열어 주세요.');
     if (block.kind !== 'sourceRegion' && !block.text.trim())
-      throw new Error(
-        '본문을 비우는 대신 블록 제외를 선택해 주세요. 빈 본문은 누락 방지를 위해 변환하지 않습니다.',
-      );
+      throw new Error('빈 본문은 변환할 수 없습니다. 내용을 입력하거나 영역을 제외해 주세요.');
   }
+  const ownerCounts = new Map<string, number>();
+  for (const block of effective.blocks)
+    for (const id of block.sourceIds) ownerCounts.set(id, (ownerCounts.get(id) ?? 0) + 1);
+  const excludedIds = new Set(
+    scopedReading.blocks
+      .filter((block) => overrides[block.id]?.excluded)
+      .flatMap((block) => block.sourceIds),
+  );
+  const hasUnrouted = scopedSource.pages.some((page) =>
+    page.items.some((item) => !ownerCounts.has(item.id) && !excludedIds.has(item.id)),
+  );
+  if (hasUnrouted || [...ownerCounts.values()].some((count) => count > 1))
+    throw new Error('내용의 누락이나 중복이 발견되었습니다. PDF를 다시 열어 주세요.');
+
   const output = await PDFDocument.create();
   output.registerFontkit(fontkit);
   const family = config.fontFamily === 'sans' ? 'NotoSans-Regular.ttf' : 'NotoSerif-Regular.ttf';
@@ -358,16 +408,11 @@ export async function exportPdf(
   let korean: Awaited<ReturnType<typeof output.embedFont>> | undefined;
   const primarySet = new Set(primary.getCharacterSet());
   const allText = effective.blocks
-    .filter((b) => b.kind !== 'sourceRegion')
-    .map((b) => b.text)
+    .filter((block) => block.kind !== 'sourceRegion')
+    .map((block) => block.text)
     .join('');
-  if ([...allText].some((c) => !primarySet.has(c.codePointAt(0)!) && !/\s/u.test(c))) {
-    progress({
-      stage: 'laying-out',
-      current: 0,
-      total: 1,
-      message: '한글·다국어 대체 글꼴 준비 중',
-    });
+  if ([...allText].some((char) => !primarySet.has(char.codePointAt(0)!) && !/\s/u.test(char))) {
+    progress({ stage: 'laying-out', current: 0, total: 1, message: '글꼴 준비 중' });
     korean = await output.embedFont(await fontBytes('NotoSansKR-Regular.ttf'), { subset: true });
   }
   const koreanSet = new Set(korean?.getCharacterSet() ?? []);
@@ -377,57 +422,65 @@ export async function exportPdf(
       : koreanSet.has(char.codePointAt(0)!)
         ? korean!
         : primary;
-  const glyphWarnings: string[] = [];
+  const renderOverrides: Overrides = { ...overrides };
   for (const block of effective.blocks) {
     if (
       block.kind !== 'sourceRegion' &&
       [...block.text].some(
-        (c) =>
-          !primarySet.has(c.codePointAt(0)!) && !koreanSet.has(c.codePointAt(0)!) && !/\s/u.test(c),
+        (char) =>
+          !primarySet.has(char.codePointAt(0)!) &&
+          !koreanSet.has(char.codePointAt(0)!) &&
+          !/\s/u.test(char),
       )
     ) {
       if (overrides[block.id]?.text !== undefined)
         throw new Error(
-          `${block.sourcePage}쪽에서 수정한 본문에 지원하지 않는 문자가 있습니다. 다른 문자로 수정하거나 해당 블록의 원문 보존을 선택해 주세요.`,
+          `${block.sourcePage}쪽 수정 내용에 지원하지 않는 문자가 있습니다. 다른 문자로 바꾸거나 원문 보존을 선택해 주세요.`,
         );
       block.kind = 'sourceRegion';
-      block.reason = '출력 글꼴에 없는 문자를 포함해 원문 영역으로 보존';
-      glyphWarnings.push(
-        `${block.sourcePage}쪽: 지원하지 않는 글리프가 있는 블록을 원문 이미지로 보존했습니다.`,
-      );
+      block.reason = '출력 글꼴에 없는 문자를 원문 영역으로 보존';
+      renderOverrides[block.id] = { ...overrides[block.id], kind: 'sourceRegion' };
     }
   }
   const runs = (text: string) => {
     const result: { text: string; font: typeof primary }[] = [];
     for (const char of text) {
-      const font = fontFor(char),
-        last = result.at(-1);
+      const font = fontFor(char);
+      const last = result.at(-1);
       if (last?.font === font) last.text += char;
       else result.push({ text: char, font });
     }
     return result;
   };
   const measure = (text: string, size: number) =>
-    runs(text).reduce((sum, r) => sum + r.font.widthOfTextAtSize(r.text, size), 0);
-  progress({
-    stage: 'laying-out',
-    current: 0,
-    total: 1,
-    message: '실제 글꼴 폭으로 줄바꿈과 페이지 나눔 계산 중',
-  });
+    runs(text).reduce((sum, run) => sum + run.font.widthOfTextAtSize(run.text, size), 0);
+  progress({ stage: 'laying-out', current: 0, total: 1, message: '페이지 구성 중' });
   const layout = layoutDocument(effective, config, measure);
+  const inBounds = layout.pages.every((page) =>
+    page.placements.every(
+      (placement) =>
+        [placement.x, placement.y, placement.width, placement.height].every(Number.isFinite) &&
+        placement.x >= config.marginLeftPt - 0.1 &&
+        placement.y >= config.marginTopPt - 0.1 &&
+        placement.x + placement.width <= config.pageWidthPt - config.marginRightPt + 0.1 &&
+        placement.y + placement.height <= config.pageHeightPt - config.marginBottomPt + 0.1,
+    ),
+  );
+  if (!layout.pages.length || !inBounds)
+    throw new Error('페이지 바깥으로 벗어난 내용이 있습니다. 페이지 크기와 여백을 확인해 주세요.');
+  const issues = collectCriticalIssues(scopedSource, scopedReading, renderOverrides, layout);
   const input = await openPdf(bytes, password);
-  const footerFont = await output.embedFont(StandardFonts.Helvetica);
-  const background = config.theme === 'warm' ? rgb(0.965, 0.941, 0.89) : rgb(1, 1, 1);
-  const color = config.theme === 'warm' ? rgb(0.255, 0.204, 0.169) : rgb(0.12, 0.13, 0.14);
   try {
+    const footerFont = await output.embedFont(StandardFonts.Helvetica);
+    const background = config.theme === 'warm' ? rgb(0.965, 0.941, 0.89) : rgb(1, 1, 1);
+    const color = config.theme === 'warm' ? rgb(0.255, 0.204, 0.169) : rgb(0.12, 0.13, 0.14);
     for (let index = 0; index < layout.pages.length; index++) {
       const pageLayout = layout.pages[index];
       progress({
         stage: 'exporting',
         current: index + 1,
         total: layout.pages.length,
-        message: `읽기본 ${index + 1} / ${layout.pages.length}쪽 생성 중`,
+        message: `PDF ${index + 1} / ${layout.pages.length}쪽 생성 중`,
       });
       const page = output.addPage([config.pageWidthPt, config.pageHeightPt]);
       page.drawRectangle({
@@ -437,251 +490,54 @@ export async function exportPdf(
         height: config.pageHeightPt,
         color: background,
       });
-      for (const p of pageLayout.placements) {
-        if (p.type === 'text') {
-          let x = p.x;
-          for (const run of runs(p.text)) {
+      for (const placement of pageLayout.placements) {
+        if (placement.type === 'text') {
+          let x = placement.x;
+          for (const run of runs(placement.text)) {
             page.drawText(run.text, {
               x,
-              y: config.pageHeightPt - p.y - p.fontSize,
-              size: p.fontSize,
+              y: config.pageHeightPt - placement.y - placement.fontSize,
+              size: placement.fontSize,
               font: run.font,
               color,
             });
-            x += run.font.widthOfTextAtSize(run.text, p.fontSize);
+            x += run.font.widthOfTextAtSize(run.text, placement.fontSize);
           }
         } else {
-          const original = await input.getPage(p.sourcePage);
+          const original = await input.getPage(placement.sourcePage);
           const scale = Math.max(
             0.1,
-            Math.min(3, 2600 / Math.max(p.sourceRect.width, p.sourceRect.height)),
+            Math.min(3, 2600 / Math.max(placement.sourceRect.width, placement.sourceRect.height)),
           );
-          const canvas = await raster(original, scale, p.sourceRect);
+          const canvas = await raster(original, scale, placement.sourceRect);
           const png = new Uint8Array(
             await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
           );
           const image = await output.embedPng(png);
           page.drawImage(image, {
-            x: p.x,
-            y: config.pageHeightPt - p.y - p.height,
-            width: p.width,
-            height: p.height,
+            x: placement.x,
+            y: config.pageHeightPt - placement.y - placement.height,
+            width: placement.width,
+            height: placement.height,
           });
           canvas.width = 0;
           canvas.height = 0;
           original.cleanup();
         }
       }
-      page.drawText(
-        `${index + 1}  /  source ${pageLayout.sourcePages.join(', ')}${scope === 'preview' ? '  PREVIEW' : ''}`,
-        {
-          x: config.marginLeftPt,
-          y: Math.max(5, config.marginBottomPt / 2 - 3),
-          size: 7,
-          font: footerFont,
-          color,
-        },
-      );
+      page.drawText(`${index + 1}${scope === 'preview' ? '  PREVIEW' : ''}`, {
+        x: config.marginLeftPt,
+        y: Math.max(5, config.marginBottomPt / 2 - 3),
+        size: 7,
+        font: footerFont,
+        color,
+      });
     }
     output.setTitle(`${scope === 'preview' ? '[PREVIEW] ' : ''}${source.name} - PDF Reflow`);
     output.setCreator(`PDF Reflow ${__APP_VERSION__}`);
     output.setProducer('pdf-lib + PDF.js');
     const readingPdf = await output.save();
-    progress({
-      stage: 'verifying',
-      current: 0,
-      total: layout.pages.length,
-      message: '전체 출력 페이지를 다시 열어 렌더링 검증 중',
-    });
-    const reopened = await openPdf(readingPdf);
-    try {
-      for (let n = 1; n <= reopened.numPages; n++) {
-        const page = await reopened.getPage(n),
-          canvas = await raster(page, 0.35);
-        canvas.width = 0;
-        canvas.height = 0;
-        page.cleanup();
-        progress({
-          stage: 'verifying',
-          current: n,
-          total: reopened.numPages,
-          message: `출력 ${n} / ${reopened.numPages}쪽 렌더링 확인`,
-        });
-      }
-    } finally {
-      await reopened.loadingTask.destroy();
-    }
-    const sourceIds = source.pages
-      .filter((p) => range.includes(p.number))
-      .flatMap((p) => p.items.map((i) => i.id));
-    const ownerCounts = new Map<string, number>();
-    for (const block of effective.blocks)
-      for (const id of block.sourceIds) ownerCounts.set(id, (ownerCounts.get(id) ?? 0) + 1);
-    const excludedIds = new Set(
-      reading.blocks.filter((b) => overrides[b.id]?.excluded).flatMap((b) => b.sourceIds),
-    );
-    const unrouted = sourceIds.filter((id) => !ownerCounts.has(id) && !excludedIds.has(id));
-    const duplicated = [...ownerCounts].filter(([, count]) => count > 1);
-    const inBounds = layout.pages.every((p) =>
-      p.placements.every(
-        (b) =>
-          b.x >= config.marginLeftPt - 0.1 &&
-          b.y >= config.marginTopPt - 0.1 &&
-          b.x + b.width <= config.pageWidthPt - config.marginRightPt + 0.1 &&
-          b.y + b.height <= config.pageHeightPt - config.marginBottomPt + 0.1,
-      ),
-    );
-    const report: VerificationReport = {
-      schemaVersion: 1,
-      appVersion: __APP_VERSION__,
-      createdAt: new Date().toISOString(),
-      sourceHash: source.hash,
-      sourceName: source.name,
-      sourcePages: source.pageCount,
-      outputPages: layout.pages.length,
-      scope,
-      selectedPages: range,
-      config,
-      blockCount: effective.blocks.length,
-      reflowedBlocks: effective.blocks.filter((b) => b.kind !== 'sourceRegion').length,
-      preservedBlocks: effective.blocks.filter((b) => b.kind === 'sourceRegion').length,
-      excludedBlocks: reading.blocks.filter(
-        (b) => range.includes(b.sourcePage) && overrides[b.id]?.excluded,
-      ).length,
-      warnings: [
-        ...new Set([
-          ...source.pages.flatMap((p) => p.warnings.map((w) => `${p.number}쪽: ${w}`)),
-          ...effective.warnings,
-          ...layout.warnings,
-          ...glyphWarnings,
-          ...(Object.values(overrides).some((o) => o.text !== undefined)
-            ? ['사용자가 수정한 텍스트가 포함되어 원문 문자열과 다를 수 있습니다.']
-            : []),
-        ]),
-      ],
-      checks: [
-        {
-          name: '원문 처리 경로',
-          passed: !unrouted.length,
-          detail: `${sourceIds.length}개 추출 항목 중 미처리 ${unrouted.length}개 (사용자 제외는 별도 기록)`,
-        },
-        {
-          name: '중복 소유 검사',
-          passed: !duplicated.length,
-          detail: `여러 블록에 중복 배정된 항목 ${duplicated.length}개`,
-        },
-        {
-          name: '출력 경계 검사',
-          passed: inBounds,
-          detail: '모든 배치 상자가 본문 가용 영역 안에 있는지 검사',
-        },
-        {
-          name: '전체 렌더링 검사',
-          passed: true,
-          detail: `${layout.pages.length}개 출력 페이지를 PDF.js로 다시 렌더링`,
-        },
-        {
-          name: '변환 범위',
-          passed: scope === 'full',
-          detail:
-            scope === 'full'
-              ? `전체 원문 ${source.pageCount}쪽 처리`
-              : `미리보기: ${range.join(', ')}쪽만 처리`,
-        },
-      ],
-      blocks: effective.blocks.map((block) => ({
-        id: block.id,
-        sourcePage: block.sourcePage,
-        kind: block.kind,
-        route: block.kind === 'sourceRegion' ? 'raster-preserved' : 'reflowed',
-        outputPages: layout.pages
-          .filter((p) => p.placements.some((x) => x.blockId === block.id))
-          .map((p) => p.number),
-        reason: block.reason,
-      })),
-      limitations,
-    };
-    if (unrouted.length || duplicated.length || !inBounds)
-      throw new Error(
-        '출력 검증에서 누락·중복 또는 배치 경계 오류를 발견했습니다. 설정이나 원문 보존 보정을 확인해 주세요.',
-      );
-    progress({
-      stage: 'exporting',
-      current: 0,
-      total: range.length,
-      message: '원문 대조 합본 생성 중',
-    });
-    const comparison = await PDFDocument.create();
-    const copied = await comparison.copyPages(output, output.getPageIndices());
-    const added = new Set<number>();
-    const addOriginal = async (number: number) => {
-      added.add(number);
-      const original = await input.getPage(number),
-        vp = original.getViewport({ scale: 1 });
-      const canvas = await raster(original, Math.min(1.6, 2200 / Math.max(vp.width, vp.height)));
-      const image = await comparison.embedPng(
-        new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()),
-      );
-      comparison
-        .addPage([vp.width, vp.height])
-        .drawImage(image, { x: 0, y: 0, width: vp.width, height: vp.height });
-      canvas.width = 0;
-      canvas.height = 0;
-      original.cleanup();
-      progress({
-        stage: 'exporting',
-        current: added.size,
-        total: range.length,
-        message: `원문 대조 ${added.size} / ${range.length}쪽 추가`,
-      });
-    };
-    // Safe visual originals; PDF actions, scripts, and attachments are never copied.
-    for (let i = 0; i < copied.length; i++) {
-      comparison.addPage(copied[i]);
-      for (const number of layout.pages[i].sourcePages)
-        if (!added.has(number)) await addOriginal(number);
-    }
-    for (const number of range.filter((n) => !added.has(n))) await addOriginal(number);
-    comparison.setTitle(
-      `${scope === 'preview' ? '[PREVIEW] ' : ''}${source.name} - Reading and source comparison`,
-    );
-    const comparisonPdf = await comparison.save();
-    const comparisonCheck = await openPdf(comparisonPdf);
-    try {
-      for (let n = 1; n <= comparisonCheck.numPages; n++) {
-        const page = await comparisonCheck.getPage(n),
-          canvas = await raster(page, 0.25);
-        canvas.width = 0;
-        canvas.height = 0;
-        page.cleanup();
-        progress({
-          stage: 'verifying',
-          current: n,
-          total: comparisonCheck.numPages,
-          message: `대조 합본 ${n} / ${comparisonCheck.numPages}쪽 렌더링 확인`,
-        });
-      }
-      report.checks.push({
-        name: '대조 합본 렌더링 검사',
-        passed: true,
-        detail: `${comparisonCheck.numPages}개 합본 페이지를 다시 렌더링. 원문 ${range.length}쪽의 보이는 모습 포함`,
-      });
-    } finally {
-      await comparisonCheck.loadingTask.destroy();
-    }
-    report.blocks.push(
-      ...reading.blocks
-        .filter((block) => range.includes(block.sourcePage) && overrides[block.id]?.excluded)
-        .map((block) => ({
-          id: block.id,
-          sourcePage: block.sourcePage,
-          kind: block.kind,
-          route: 'excluded',
-          outputPages: [],
-          reason: '사용자가 명시적으로 제외한 원문 블록',
-        })),
-    );
-    return { readingPdf, comparisonPdf, layout, report };
+    return { readingPdf, layout, scope, selectedPages: range, source, reading, issues };
   } finally {
     await input.loadingTask.destroy();
   }

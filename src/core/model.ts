@@ -20,6 +20,7 @@ export interface SourcePage {
   items: SourceText[];
   graphicRegions: Rect[];
   warnings: string[];
+  issues?: CriticalIssue[];
 }
 export interface SourceDocument {
   schemaVersion: 1;
@@ -93,51 +94,31 @@ export interface LayoutDocument {
   config: LayoutConfig;
   warnings: string[];
 }
-export interface VerificationReport {
-  schemaVersion: 1;
-  appVersion: string;
-  createdAt: string;
-  sourceHash: string;
-  sourceName: string;
-  sourcePages: number;
-  outputPages: number;
-  scope: 'full' | 'preview';
-  selectedPages: number[];
-  config: LayoutConfig;
-  blockCount: number;
-  reflowedBlocks: number;
-  preservedBlocks: number;
-  excludedBlocks: number;
-  warnings: string[];
-  checks: { name: string; passed: boolean; detail: string }[];
-  blocks: {
-    id: string;
-    sourcePage: number;
-    kind: BlockKind;
-    route: string;
-    outputPages: number[];
-    reason?: string;
-  }[];
-  limitations: string[];
+export interface CriticalIssue {
+  id: string;
+  code:
+    | 'missing-content'
+    | 'duplicate-content'
+    | 'unreadable-text'
+    | 'unplaced-content'
+    | 'unsupported-annotation';
+  sourcePage: number;
+  message: string;
+  blockId?: string;
+  rect?: Rect;
 }
 export interface ConversionResult {
   readingPdf: Uint8Array;
-  comparisonPdf: Uint8Array;
-  report: VerificationReport;
   layout: LayoutDocument;
+  scope: 'full' | 'preview';
+  selectedPages: number[];
+  source: SourceDocument;
+  reading: ReadingDocument;
+  issues: CriticalIssue[];
 }
 export interface Progress {
   stage: string;
   current: number;
   total: number;
   message: string;
-}
-export interface SavedProject {
-  schemaVersion: 1;
-  sourceHash: string;
-  sourceName: string;
-  config: LayoutConfig;
-  overrides: Overrides;
-  reading: ReadingDocument;
-  savedAt: string;
 }

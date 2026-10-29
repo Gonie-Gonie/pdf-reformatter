@@ -6,9 +6,7 @@ import { ChevronLeft, ChevronRight, Minus, Plus, Maximize2 } from 'lucide-react'
 import { getSourcePassword } from '../adapters/pdf/client';
 import type { Rect } from '../core/model';
 import './PdfViewer.css';
-
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
 interface Props {
   data: Uint8Array | null;
   page: number;
@@ -16,43 +14,61 @@ interface Props {
   label: string;
   highlight?: Rect | null;
 }
-
-interface RenderedView {
+interface RenderedPage {
   pdf: PDFDocumentProxy;
   page: number;
-  width: number;
+  availableWidth: number;
   zoom: number;
+  width: number;
+  height: number;
+  scale: number;
 }
-
 export function PdfViewer({ data, page, onPageChange, label, highlight }: Props) {
   const [loaded, setLoaded] = useState<{ data: Uint8Array; pdf: PDFDocumentProxy } | null>(null);
   const [error, setError] = useState('');
-  const [width, setWidth] = useState(420);
-  const [zoom, setZoom] = useState(1);
-  const [geometry, setGeometry] = useState({ width: 1, height: 1, scale: 1 });
-  const [rendered, setRendered] = useState<RenderedView | null>(null);
-  const container = useRef<HTMLDivElement>(null);
-  const canvas = useRef<HTMLCanvasElement>(null);
+  const [availableWidth, setAvailableWidth] = useState(420),
+    [zoom, setZoom] = useState(1);
+  const [rendered, setRendered] = useState<RenderedPage | null>(null);
+  const frame = useRef<HTMLElement>(null),
+    scroll = useRef<HTMLDivElement>(null),
+    canvas = useRef<HTMLCanvasElement>(null);
   const activeRender = useRef<RenderTask | null>(null);
-  // A replacement byte buffer must never display the previous document, even for one frame.
   const pdf = loaded?.data === data ? loaded.pdf : null;
   const current = Math.min(Math.max(1, page), pdf?.numPages ?? 1);
-  const ready =
-    rendered?.pdf === pdf &&
-    rendered?.page === current &&
-    rendered?.width === width &&
-    rendered?.zoom === zoom;
-
+  const currentPage = rendered?.pdf === pdf && rendered?.page === current ? rendered : null;
+  const ready = Boolean(
+    currentPage && currentPage.availableWidth === availableWidth && currentPage.zoom === zoom,
+  );
   useEffect(() => {
-    const element = container.current;
+    const element = frame.current;
     if (!element) return;
-    const observer = new ResizeObserver((entries) =>
-      setWidth(Math.max(140, entries[0].contentRect.width - 36)),
-    );
+    let pending = 0;
+    const measure = () => {
+      cancelAnimationFrame(pending);
+      pending = requestAnimationFrame(() => {
+        const viewport = scroll.current;
+        if (!viewport) return;
+        const style = getComputedStyle(viewport);
+        const next = Math.max(
+          100,
+          Math.floor(
+            viewport.clientWidth -
+              parseFloat(style.paddingLeft) -
+              parseFloat(style.paddingRight) -
+              2,
+          ),
+        );
+        setAvailableWidth((previous) => (Math.abs(previous - next) >= 2 ? next : previous));
+      });
+    };
+    const observer = new ResizeObserver(measure);
     observer.observe(element);
-    return () => observer.disconnect();
+    measure();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(pending);
+    };
   }, []);
-
   useEffect(() => {
     setLoaded(null);
     setError('');
@@ -73,67 +89,81 @@ export function PdfViewer({ data, page, onPageChange, label, highlight }: Props)
         if (active) setLoaded({ data, pdf: document });
       })
       .catch((caught) => {
-        if (active)
-          setError(caught instanceof Error ? caught.message : 'PDF를 표시할 수 없습니다.');
+        if (active) setError(caught instanceof Error ? caught.message : 'PDF 표시 오류');
       });
     return () => {
       active = false;
-      void task.destroy().catch(() => {
-        /* Loading was already cancelled. */
-      });
+      activeRender.current?.cancel();
+      void task.destroy().catch(() => {});
     };
   }, [data]);
-
   useEffect(() => {
-    if (!pdf || !canvas.current) return;
+    if (!pdf) return;
     let active = true;
-    let renderTask: RenderTask | undefined;
+    let task: RenderTask | undefined;
     const previous = activeRender.current;
     previous?.cancel();
     setError('');
     void (async () => {
-      // PDF.js forbids concurrent renders into the same canvas during rapid page/size changes.
-      if (previous)
-        await previous.promise.catch(() => {
-          /* Cancellation is expected. */
-        });
+      if (previous) await previous.promise.catch(() => {});
       if (!active) return;
       const original = await pdf.getPage(current);
-      if (!active || !canvas.current) return;
+      if (!active) return;
       const viewport = original.getViewport({ scale: 1 });
-      const scale = Math.min(width / viewport.width, 1.5) * zoom;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const scale = Math.min(availableWidth / viewport.width, 1.5) * zoom;
       const display = original.getViewport({ scale });
-      const element = canvas.current;
-      element.width = Math.ceil(display.width * dpr);
-      element.height = Math.ceil(display.height * dpr);
-      element.style.width = `${display.width}px`;
-      element.style.height = `${display.height}px`;
-      setGeometry({ width: display.width, height: display.height, scale });
-      renderTask = original.render({
-        canvas: element,
+      const dpr = Math.min(
+        window.devicePixelRatio || 1,
+        2,
+        Math.sqrt(12_000_000 / Math.max(1, display.width * display.height)),
+        16_000 / Math.max(display.width, display.height),
+      );
+      const buffer = document.createElement('canvas');
+      buffer.width = Math.max(1, Math.ceil(display.width * dpr));
+      buffer.height = Math.max(1, Math.ceil(display.height * dpr));
+      task = original.render({
+        canvas: buffer,
         viewport: display,
         transform: [dpr, 0, 0, dpr, 0, 0],
       });
-      activeRender.current = renderTask;
-      await renderTask.promise;
-      if (active) setRendered({ pdf, page: current, width, zoom });
+      activeRender.current = task;
+      try {
+        await task.promise;
+        const target = canvas.current;
+        if (!active || !target) return;
+        target.width = buffer.width;
+        target.height = buffer.height;
+        target.getContext('2d')!.drawImage(buffer, 0, 0);
+        setRendered({
+          pdf,
+          page: current,
+          availableWidth,
+          zoom,
+          width: display.width,
+          height: display.height,
+          scale,
+        });
+      } finally {
+        buffer.width = 0;
+        buffer.height = 0;
+      }
     })()
-      .catch((caught: unknown) => {
+      .catch((caught) => {
         if (active && !(caught instanceof Error && caught.name === 'RenderingCancelledException'))
           setError(caught instanceof Error ? caught.message : '페이지 표시 오류');
       })
       .finally(() => {
-        if (activeRender.current === renderTask) activeRender.current = null;
+        if (activeRender.current === task) activeRender.current = null;
       });
     return () => {
       active = false;
-      renderTask?.cancel();
+      task?.cancel();
     };
-  }, [pdf, current, width, zoom]);
-
+  }, [pdf, current, availableWidth, zoom]);
+  const dimensions = rendered ?? { width: 1, height: 1, scale: 1 };
   return (
     <section
+      ref={frame}
       className="pdf-viewer"
       aria-label={`${label} PDF 뷰어`}
       aria-busy={Boolean(data && !ready && !error)}
@@ -200,40 +230,43 @@ export function PdfViewer({ data, page, onPageChange, label, highlight }: Props)
           </button>
         </div>
       </div>
-      <div className="pdf-canvas-scroll" ref={container}>
-        {error && (
-          <p role="alert" className="pdf-error">
-            {error}
-          </p>
-        )}
-        {data && !ready && !error && (
-          <p role="status" className="pdf-empty">
-            {pdf ? '페이지를 그리는 중입니다…' : 'PDF를 불러오는 중입니다…'}
-          </p>
-        )}
-        {data ? (
-          <div
-            className="pdf-paper"
-            hidden={!ready || Boolean(error)}
-            style={{ width: geometry.width, height: geometry.height }}
-          >
-            <canvas ref={canvas} aria-label={`${label} ${current}쪽`} />
-            {ready && highlight && (
-              <div
-                className="pdf-highlight"
-                style={{
-                  left: highlight.x * geometry.scale,
-                  top: highlight.y * geometry.scale,
-                  width: highlight.width * geometry.scale,
-                  height: highlight.height * geometry.scale,
-                }}
-              />
-            )}
-          </div>
-        ) : (
-          <p className="pdf-empty">PDF를 열면 페이지를 표시합니다.</p>
-        )}
+      <div className="pdf-canvas-scroll" ref={scroll}>
+        <div
+          className="pdf-paper"
+          style={{
+            width: dimensions.width,
+            height: dimensions.height,
+            visibility: currentPage && !error ? 'visible' : 'hidden',
+          }}
+        >
+          <canvas
+            ref={canvas}
+            aria-label={`${label} ${current}쪽`}
+            style={{ width: dimensions.width, height: dimensions.height }}
+          />
+          {currentPage && highlight && (
+            <div
+              className="pdf-highlight"
+              style={{
+                left: highlight.x * dimensions.scale,
+                top: highlight.y * dimensions.scale,
+                width: highlight.width * dimensions.scale,
+                height: highlight.height * dimensions.scale,
+              }}
+            />
+          )}
+        </div>
       </div>
+      {data && !ready && !error && (
+        <div className="pdf-loading" role="status" aria-label="불러오는 중">
+          <span />
+        </div>
+      )}
+      {error && (
+        <p className="pdf-error" role="alert">
+          {error}
+        </p>
+      )}
     </section>
   );
 }

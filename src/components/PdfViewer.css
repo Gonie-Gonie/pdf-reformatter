@@ -1,11 +1,15 @@
 .pdf-viewer {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  height: clamp(320px, 72dvh, 860px);
   min-width: 0;
   border: 1px solid #ded8cc;
   border-radius: 10px;
   overflow: hidden;
   background: #eae7df;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .pdf-toolbar {
   display: flex;
@@ -59,13 +63,14 @@
   appearance: none;
 }
 .pdf-canvas-scroll {
-  overflow: auto;
-  max-height: 78vh;
-  min-height: 340px;
-  padding: 18px;
-  display: flex;
-  align-items: flex-start;
-  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: scroll;
+  scrollbar-gutter: stable both-edges;
+  overscroll-behavior: contain;
+  padding: 16px;
 }
 .pdf-paper {
   position: relative;
@@ -83,25 +88,41 @@
   background: #d8ac3325;
   pointer-events: none;
 }
-.pdf-empty {
-  margin: auto;
-  text-align: center;
-  color: #8a8377;
-  font-size: 13px;
-  line-height: 1.8;
+.pdf-loading {
+  position: absolute;
+  inset: 52px 0 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.pdf-loading > span {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #c9c1b3;
+  border-top-color: #795137;
+  border-radius: 50%;
+  animation: pdf-spin 0.8s linear infinite;
 }
 .pdf-error {
+  position: absolute;
+  inset: 60px 12px auto;
   color: #9b4339;
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+@keyframes pdf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pdf-loading > span {
+    animation: none;
+  }
+}
 @media (max-width: 600px) {
   .pdf-toolbar {
     padding: 8px;
-  }
-  .pdf-canvas-scroll {
-    min-height: 260px;
-    max-height: 75vh;
   }
   .pdf-zoom-nav {
     gap: 0;

@@ -6,6 +6,7 @@ interface Request {
   bytes: Uint8Array;
   name: string;
   password?: string;
+  pageLimit?: number;
   source: SourceDocument;
   reading: ReadingDocument;
   config: LayoutConfig;
@@ -17,7 +18,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
   const progress = (value: unknown) => self.postMessage({ id: r.id, type: 'progress', value });
   try {
     if (r.type === 'analyze') {
-      const value = await extractPdf(r.bytes, r.name, progress, r.password);
+      const value = await extractPdf(r.bytes, r.name, progress, r.password, r.pageLimit);
       self.postMessage({ id: r.id, type: 'result', value });
     } else {
       const value = await exportPdf(
@@ -33,10 +34,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       self.postMessage(
         { id: r.id, type: 'result', value },
         {
-          transfer: [
-            value.readingPdf.buffer as ArrayBuffer,
-            value.comparisonPdf.buffer as ArrayBuffer,
-          ],
+          transfer: [value.readingPdf.buffer as ArrayBuffer],
         },
       );
     }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { analyzeDocument, applyOverrides } from '../../src/core/analyze';
 import { DEFAULT_CONFIG, validateConfig } from '../../src/core/config';
 import { contentWidth } from '../../src/core/geometry';
+import { collectCriticalIssues } from '../../src/core/issues';
 import { layoutDocument, wrapText } from '../../src/core/layout';
 import type { ReadingDocument, SourceDocument, SourcePage, SourceText } from '../../src/core/model';
 
@@ -326,5 +327,58 @@ describe('measured reflow and pagination', () => {
   it('rejects an empty all-excluded document', () => {
     const empty = { ...reading(), blocks: [] };
     expect(() => layoutDocument(empty, DEFAULT_CONFIG, measure)).toThrow('출력할 내용이 없습니다');
+  });
+});
+
+describe('critical content review', () => {
+  it('finds a completely omitted source page even when the other page lays out correctly', () => {
+    const original = source([
+      page([item('first', 'The first page remains visible.')]),
+      { ...page([item('last', 'The final page must remain visible.')]), number: 2 },
+    ]);
+    const analyzed = analyzeDocument(original);
+    const incomplete = {
+      ...analyzed,
+      blocks: analyzed.blocks.filter((block) => block.sourcePage === 1),
+    };
+    const layout = layoutDocument(incomplete, DEFAULT_CONFIG, measure);
+    const issues = collectCriticalIssues(original, incomplete, {}, layout);
+    expect(issues).toEqual([expect.objectContaining({ code: 'missing-content', sourcePage: 2 })]);
+  });
+
+  it('reports duplicate ownership when the same source text reaches the output twice', () => {
+    const original = source([page([item('one', 'This sentence should occur once.')])]);
+    const analyzed = analyzeDocument(original);
+    const duplicated = {
+      ...analyzed,
+      blocks: [...analyzed.blocks, { ...analyzed.blocks[0], id: 'duplicate' }],
+    };
+    const layout = layoutDocument(duplicated, DEFAULT_CONFIG, measure);
+    expect(collectCriticalIssues(original, duplicated, {}, layout)).toEqual([
+      expect.objectContaining({ code: 'duplicate-content', sourcePage: 1 }),
+    ]);
+  });
+
+  it('clears unreadable-text risk when the original region is preserved', () => {
+    const original = source([page([item('one', 'Visible source text.')])]);
+    const analyzed = analyzeDocument(original);
+    analyzed.blocks[0].text = 'Visible \ufffd text.';
+    const layout = layoutDocument(analyzed, DEFAULT_CONFIG, measure);
+    expect(collectCriticalIssues(original, analyzed, {}, layout)).toEqual([
+      expect.objectContaining({ code: 'unreadable-text', sourcePage: 1 }),
+    ]);
+    const overrides = { [analyzed.blocks[0].id]: { kind: 'sourceRegion' as const } };
+    const preserved = applyOverrides(analyzed, overrides);
+    const preservedLayout = layoutDocument(preserved, DEFAULT_CONFIG, measure);
+    expect(collectCriticalIssues(original, preserved, overrides, preservedLayout)).toEqual([]);
+  });
+
+  it('does not treat safe preservation and scaling as content-loss issues', () => {
+    const scanned = { ...page([]), width: 1000, height: 5000 };
+    const original = source([scanned]);
+    const analyzed = analyzeDocument(original);
+    const layout = layoutDocument(analyzed, DEFAULT_CONFIG, measure);
+    expect(layout.warnings.length).toBeGreaterThan(0);
+    expect(collectCriticalIssues(original, analyzed, {}, layout)).toEqual([]);
   });
 });

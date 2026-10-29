@@ -193,7 +193,7 @@ export async function generateMixedDocumentPdf(
   });
   wrapped(
     one,
-    'The reading edition is a complete copy of the selected source content, not a summary. Any uncertain structure should stay visible for review. Use the comparison edition to check a preserved drawing against its source page.',
+    'The reading edition contains the selected source content in a new page format. Its paragraphs and preserved drawings retain their original order. A change of page size must keep the final sentence and the footnote below.',
     regular,
     48,
     164,
@@ -226,8 +226,8 @@ export async function generateMixedDocumentPdf(
   });
   const left = [
     'Left column begins here. A two-column page saves paper, but it can be awkward on a small screen. Reading order should follow this entire left column before continuing at the top of the right column.',
-    'This paragraph introduces a simple conservation rule: each source text item must have exactly one owner. An item may belong to reflowed prose or to a preserved drawing, and a user may explicitly exclude it.',
-    'Line-end hyphens are not silently removed. A word that is uncertain remains as extracted, and manual corrections are stored separately from the source analysis so that a new page size keeps those corrections.',
+    'This paragraph introduces a simple conservation rule: each source text item must have exactly one owner. An item may belong to reflowed prose or to a preserved drawing. Both paths retain the source content.',
+    'Line-end hyphens are not silently removed. A word that is uncertain remains as extracted. The same words must remain in reading order after layout changes.',
   ];
   const right = [
     'Right column begins here. This sentence follows the last sentence of the left column. A geometry-based detector can identify a stable gutter, but the final order still deserves human inspection.',
@@ -303,7 +303,7 @@ export async function generateMixedDocumentPdf(
   );
   y = wrapped(
     three,
-    '페이지 크기와 글자 크기를 바꾸어도 원문 분석과 수동 수정은 그대로 유지됩니다. 아래 표의 숫자는 아무 측정 결과도 나타내지 않는 임의의 시험 값입니다. 전체 문서의 처리 경로와 배치 검사를 보고서에 기록합니다.',
+    '페이지 크기와 글자 크기를 바꾸면 줄바꿈과 페이지 나눔을 다시 계산합니다. 아래 표의 숫자는 아무 측정 결과도 나타내지 않는 임의의 시험 값입니다. 문단과 표의 배치가 달라져도 마지막 문장은 결과에 남아야 합니다.',
     korean,
     48,
     y - 16,
@@ -371,7 +371,7 @@ export async function generateMixedDocumentPdf(
   });
   wrapped(
     three,
-    '검증 보고서는 추출된 텍스트 항목이 어디에서 처리되었는지 보여 줍니다. 보고서의 통과 표시는 의미의 동등성이나 완전한 시각적 일치를 보장하지 않습니다. 최종 결과는 원문과 직접 대조해 확인하세요.',
+    '표 아래에 이어지는 마지막 문단입니다. 표를 이미지로 보존하더라도 주변 본문은 순서대로 이어집니다. 이 문단의 끝과 아래쪽 작은 글씨도 새 페이지 크기에 맞춘 결과에서 확인할 수 있어야 합니다.',
     korean,
     48,
     180,

@@ -80,6 +80,7 @@ export async function analyzePdf(
   file: File,
   onProgress: (p: Progress) => void,
   password?: string,
+  pageLimit = 10,
 ): Promise<{ source: SourceDocument; reading: ReadingDocument }> {
   cancelJob();
   const revision = lifecycle;
@@ -89,7 +90,7 @@ export async function analyzePdf(
   if (!new TextDecoder('latin1').decode(bytes.subarray(0, 1024)).includes('%PDF-'))
     throw new Error('PDF 형식이 아닙니다. 파일 확장자와 내용을 확인해 주세요.');
   const result = await runJob<{ source: SourceDocument; reading: ReadingDocument }>(
-    { type: 'analyze', bytes: bytes.slice(), name: file.name, password },
+    { type: 'analyze', bytes: bytes.slice(), name: file.name, password, pageLimit },
     onProgress,
   );
   sourceBytes = bytes;
