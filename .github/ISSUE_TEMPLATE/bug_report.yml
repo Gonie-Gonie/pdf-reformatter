@@ -1,0 +1,24 @@
+name: PDF 변환 오류
+description: 원본 문서를 공개하지 않고 재현 조건을 알려주세요.
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: 실행 환경과 앱 빌드 ID
+      description: 운영체제, 브라우저 버전, 앱 하단의 빌드 ID를 적어주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 순서와 기대 결과
+      description: 설정, 원문 쪽수, 경고 내용을 적어주세요. 개인정보가 있는 원본 PDF는 첨부하지 마세요.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 실제 결과
+      description: 가능하면 개인정보 없는 합성 문서로 재현해주세요.
+    validations:
+      required: true

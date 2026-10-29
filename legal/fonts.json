@@ -1,0 +1,43 @@
+[
+  {
+    "filename": "NotoSerif-Regular.ttf",
+    "bytes": 616196,
+    "sha256": "c8f669ceb2c9c60ccf55198b305e08a997ffca79a38cc7eeb551e643cbe66505",
+    "family": "Noto Serif",
+    "version": "Version 2.007; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+    "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+    "license": "OFL-1.1",
+    "source": "https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/NotoSerif"
+  },
+  {
+    "filename": "NotoSerif-Bold.ttf",
+    "bytes": 638164,
+    "sha256": "3b2086a869bcded2aeb4416fc281ceec9d6ce3c06756cda19f8f763636204e7d",
+    "family": "Noto Serif Bold",
+    "version": "Version 2.007; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+    "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+    "license": "OFL-1.1",
+    "source": "https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/NotoSerif"
+  },
+  {
+    "filename": "NotoSans-Regular.ttf",
+    "bytes": 569208,
+    "sha256": "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5",
+    "family": "Noto Sans",
+    "version": "Version 2.008; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+    "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+    "license": "OFL-1.1",
+    "source": "https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/NotoSans"
+  },
+  {
+    "filename": "NotoSansKR-Regular.ttf",
+    "bytes": 6092804,
+    "sha256": "b5cf05ddd7caab52e978b969bf8cd1adba5f8875aa4e07d40b996c74189c63f7",
+    "family": "Noto Sans KR",
+    "version": "Version 2.004-H2;hotconv 1.0.118;makeotfexe 2.5.65603",
+    "copyright": "(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.",
+    "license": "OFL-1.1",
+    "source": "https://github.com/google/fonts/tree/main/ofl/notosanskr",
+    "derivation": "Static weight 400 instance of NotoSansKR[wght].ttf via fontTools 4.55.0; GSUB/GPOS/GDEF/BASE and vertical metrics removed; glyf padding 4 for fontkit subset compatibility. Glyph outlines retained; complex shaping unsupported."
+  }
+]

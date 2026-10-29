@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff2 binary
+*.png binary
+*.jpg binary
+*.cmd text eol=crlf

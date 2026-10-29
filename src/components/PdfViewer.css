@@ -1,0 +1,112 @@
+.pdf-viewer {
+  min-width: 0;
+  border: 1px solid #ded8cc;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #eae7df;
+  display: flex;
+  flex-direction: column;
+}
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 11px 13px;
+  background: #f9f7f1;
+  border-bottom: 1px solid #ded8cc;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.pdf-label {
+  font-weight: 650;
+  color: #514b40;
+}
+.pdf-page-nav,
+.pdf-zoom-nav {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.pdf-toolbar button {
+  border: 0;
+  background: transparent;
+  color: #6c665b;
+  padding: 5px;
+  min-height: 30px;
+  min-width: 30px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+}
+.pdf-toolbar button:hover:not(:disabled) {
+  background: #e8e3d8;
+}
+.pdf-toolbar button:disabled {
+  opacity: 0.3;
+}
+.pdf-page-nav input {
+  width: 36px;
+  text-align: center;
+  border: 1px solid #ddd7ca;
+  border-radius: 4px;
+  background: #fffdf7;
+  font-size: 12px;
+  padding: 3px;
+  appearance: textfield;
+}
+.pdf-page-nav input::-webkit-inner-spin-button {
+  appearance: none;
+}
+.pdf-canvas-scroll {
+  overflow: auto;
+  max-height: 78vh;
+  min-height: 340px;
+  padding: 18px;
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+}
+.pdf-paper {
+  position: relative;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 3px 12px #3c34251c;
+  flex: none;
+}
+.pdf-paper canvas {
+  display: block;
+}
+.pdf-highlight {
+  position: absolute;
+  border: 2px solid #a56c2b;
+  background: #d8ac3325;
+  pointer-events: none;
+}
+.pdf-empty {
+  margin: auto;
+  text-align: center;
+  color: #8a8377;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.pdf-error {
+  color: #9b4339;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .pdf-toolbar {
+    padding: 8px;
+  }
+  .pdf-canvas-scroll {
+    min-height: 260px;
+    max-height: 75vh;
+  }
+  .pdf-zoom-nav {
+    gap: 0;
+  }
+  .pdf-toolbar button {
+    min-width: 28px;
+  }
+}

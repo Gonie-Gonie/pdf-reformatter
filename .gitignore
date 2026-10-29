@@ -1,0 +1,26 @@
+# Dependencies and generated files
+**/node_modules/
+/.cache/
+/.tools/
+/public/pdfjs/
+/public/licenses/
+*.tsbuildinfo
+*.log
+
+# Local documents and secrets
+/.env*
+!/.env.example
+/test-data-private/
+*.reflow-project
+*.reflow-project.zip
+
+# Other tool defaults and temporary files
+/dist/
+/coverage/
+/test-results/
+/playwright-report/
+/artifacts/
+/output/
+/tmp/
+.DS_Store
+Thumbs.db
