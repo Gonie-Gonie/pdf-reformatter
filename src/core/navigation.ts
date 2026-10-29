@@ -121,7 +121,12 @@ export function buildPageLinks(
   const cursors = new Map<string, TextCursor>();
   for (const page of layout.pages) {
     for (const placement of page.placements) {
-      if (!finiteRect(placement) || (placement.type === 'text' && !placement.text.trim())) continue;
+      if (
+        !finiteRect(placement) ||
+        placement.decoration ||
+        (placement.type === 'text' && !placement.text.trim())
+      )
+        continue;
       const original = sourcePages.get(placement.sourcePage);
       if (!original) continue;
       let sourceRect: Rect | undefined;
@@ -137,7 +142,10 @@ export function buildPageLinks(
             cursor = makeCursor(items);
             cursors.set(block.id, cursor);
           }
-          sourceRect = locateText(cursor, placement.text) ?? block.rect;
+          const start = placement.textStart;
+          const span =
+            start === undefined ? undefined : block.sourceSpans?.find((entry) => entry.end > start);
+          sourceRect = span?.rect ?? locateText(cursor, placement.text) ?? block.rect;
         }
       }
       sourceRect ??= original.items[0] ?? {

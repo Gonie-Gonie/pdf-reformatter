@@ -23,6 +23,11 @@ export function collectCriticalIssues(
   );
   for (const block of reading.blocks) {
     if (!selectedPages.has(block.sourcePage)) continue;
+    if (block.running) {
+      for (const id of block.sourceIds)
+        sourceOwners.set(id, [...(sourceOwners.get(id) ?? []), block.id]);
+      continue;
+    }
     if (overrides[block.id]?.excluded) {
       issues.push({
         id: `excluded:${block.id}`,

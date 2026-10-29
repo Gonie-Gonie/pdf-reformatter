@@ -11,6 +11,18 @@ export interface SourceText extends Rect {
   fontSize: number;
   fontName: string;
   hasEOL: boolean;
+  markedContentId?: string;
+  structureRoles?: string[];
+  artifact?: boolean;
+  rotation?: number;
+  preserve?: boolean;
+}
+export interface SourceStructure {
+  id: string;
+  role: string;
+  sourceIds: string[];
+  order: number;
+  parentId?: string;
 }
 export interface SourcePage {
   number: number;
@@ -21,6 +33,7 @@ export interface SourcePage {
   graphicRegions: Rect[];
   warnings: string[];
   issues?: CriticalIssue[];
+  structure?: SourceStructure[];
 }
 export interface SourceDocument {
   schemaVersion: 1;
@@ -31,7 +44,31 @@ export interface SourceDocument {
   engine: string;
 }
 export type BlockKind =
-  'heading' | 'paragraph' | 'list' | 'caption' | 'footnote' | 'reference' | 'sourceRegion';
+  | 'heading'
+  | 'paragraph'
+  | 'list'
+  | 'caption'
+  | 'footnote'
+  | 'reference'
+  | 'sourceRegion'
+  | 'lineNumber';
+/** Character offsets use NFKC text with whitespace and soft hyphens removed. */
+export interface SourceSpan {
+  sourceId: string;
+  start: number;
+  end: number;
+  rect: Rect;
+}
+export interface BlockAnchor {
+  blockId: string;
+  sourceId?: string;
+  offset?: number;
+}
+export interface ReadingReference {
+  id: string;
+  source: BlockAnchor;
+  targetBlockId: string;
+}
 export interface ReadingBlock {
   id: string;
   kind: BlockKind;
@@ -43,12 +80,20 @@ export interface ReadingBlock {
   fontSize: number;
   reason?: string;
   confidence: 'high' | 'review';
+  semantic?: 'toc' | 'index' | 'note';
+  noteLabel?: string;
+  sourceSpans?: SourceSpan[];
+  anchor?: BlockAnchor;
+  keepTogether?: boolean;
+  running?: 'header' | 'footer';
+  runningPageNumber?: boolean;
 }
 export interface ReadingDocument {
   schemaVersion: 1;
   sourceHash: string;
   blocks: ReadingBlock[];
   warnings: string[];
+  references?: ReadingReference[];
 }
 export interface BlockOverride {
   kind?: BlockKind;
@@ -70,18 +115,23 @@ export interface LayoutConfig {
   fontFamily: 'serif' | 'sans';
   theme: 'warm' | 'light';
 }
+export type Decoration = 'lineNumber' | 'runningHeader' | 'runningFooter';
 export interface TextPlacement extends Rect {
   type: 'text';
   blockId: string;
   sourcePage: number;
   text: string;
   fontSize: number;
+  textStart?: number;
+  textEnd?: number;
+  decoration?: Decoration;
 }
 export interface RegionPlacement extends Rect {
   type: 'region';
   blockId: string;
   sourcePage: number;
   sourceRect: Rect;
+  decoration?: Decoration;
 }
 export type Placement = TextPlacement | RegionPlacement;
 export interface LayoutPage {

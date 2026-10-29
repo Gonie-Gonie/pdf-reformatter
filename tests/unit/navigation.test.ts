@@ -81,6 +81,31 @@ function layout(pages: LayoutPage[]): LayoutDocument {
 }
 
 describe('content-based page links', () => {
+  it('ignores line-number decorations and uses the placed text start offset', () => {
+    const items = [item('first', 'Repeated.', 40), item('second', 'Repeated.', 90)];
+    const paragraph = block('paragraph', 1, items);
+    paragraph.sourceSpans = [
+      { sourceId: 'first', start: 0, end: 9, rect: items[0] },
+      { sourceId: 'second', start: 9, end: 18, rect: items[1] },
+    ];
+    const links = buildPageLinks(
+      source([items]),
+      reading([paragraph]),
+      layout([
+        {
+          number: 2,
+          sourcePages: [1],
+          placements: [
+            { ...text('number', 1, '42', 24), decoration: 'lineNumber' },
+            { ...text('paragraph', 1, 'Repeated.'), textStart: 9, textEnd: 18 },
+          ],
+        },
+      ]),
+    );
+    expect(links.byOutput.get(2)?.source.rect.y).toBe(90);
+    expect(links.byOutput.get(2)?.output.rect.y).toBe(34);
+  });
+
   it('locates the original line when a paragraph continues onto later output pages', () => {
     const items = [
       item('first', 'The opening sentence belongs to the first line.', 40),

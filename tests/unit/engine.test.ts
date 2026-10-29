@@ -78,6 +78,146 @@ describe('configuration and geometry', () => {
 });
 
 describe('source analysis and ownership', () => {
+  it('keeps a numbered section heading separate when the book uses the same text size', () => {
+    const reading = analyzeDocument(
+      source([
+        page([
+          item('section', '2.2.1 Building and its environment', 36, 54, 240, 10),
+          item('body', 'The surrounding body paragraph starts on the next line.', 36, 71, 360, 10),
+        ]),
+      ]),
+    );
+    expect(reading.blocks[0]).toMatchObject({ kind: 'heading', sourceIds: ['section'] });
+    expect(reading.blocks[1]).toMatchObject({ kind: 'paragraph', sourceIds: ['body'] });
+  });
+
+  it('keeps a rotated diagram label local while ordinary body text still reflows', () => {
+    const original = page([
+      item('before', 'Ordinary body text appears above this diagram.', 36, 60, 340),
+      { ...item('dimension', '14 m', 72, 220, 8, 8), height: 20, preserve: true, rotation: -90 },
+      item('after', 'Ordinary body text resumes below the diagram.', 36, 360, 340),
+    ]);
+    original.graphicRegions = [{ x: 60, y: 180, width: 280, height: 130 }];
+    const reading = analyzeDocument(source([original]));
+    const region = reading.blocks.find((block) => block.sourceIds.includes('dimension'))!;
+    expect(region.kind).toBe('sourceRegion');
+    expect(region.rect.height).toBeLessThan(160);
+    expect(region.sourceIds).toEqual(['dimension']);
+    expect(reading.blocks.find((block) => block.sourceIds.includes('before'))?.kind).toBe(
+      'paragraph',
+    );
+    expect(reading.blocks.find((block) => block.sourceIds.includes('after'))?.kind).toBe(
+      'paragraph',
+    );
+  });
+
+  it('distinguishes numeric figure legends from actual footnotes below a drawing', () => {
+    const original = page([
+      item('body', 'The prose discusses a diagram with a numeric legend.', 36, 60, 340),
+      item('legend', '4 m high', 200, 620, 80, 8),
+      item('note-label', '1', 36, 740, 5, 8),
+      item('note-body', 'An actual footnote remains outside the drawing.', 46, 740, 300, 8),
+    ]);
+    original.graphicRegions = [{ x: 80, y: 500, width: 300, height: 150 }];
+    const reading = analyzeDocument(source([original]));
+    const figure = reading.blocks.find((block) => block.sourceIds.includes('legend'))!;
+    expect(figure.kind).toBe('sourceRegion');
+    expect(figure.semantic).not.toBe('note');
+    expect(reading.blocks.find((block) => block.sourceIds.includes('note-body'))).toMatchObject({
+      semantic: 'note',
+      noteLabel: '1',
+    });
+  });
+
+  it('keeps repeated book heads and folios out of body flow without false omission issues', () => {
+    const original = source(
+      Array.from({ length: 6 }, (_, index) => ({
+        ...page([
+          item(`header-${index}`, 'A repeated book running head', 36, 20, 250, 9),
+          item(`folio-${index}`, String(index + 1), 560, 20, 12, 9),
+          item(
+            `body-${index}`,
+            `Body from source page ${index + 1} remains in the reading order.`,
+            36,
+            60,
+            360,
+          ),
+        ]),
+        number: index + 1,
+        graphicRegions: [{ x: 36, y: 34, width: 540, height: 1 }],
+      })),
+    );
+    const reading = analyzeDocument(original);
+    const layout = layoutDocument(reading, DEFAULT_CONFIG, measure);
+    expect(
+      reading.blocks.filter((block) => block.running && !block.runningPageNumber),
+    ).toHaveLength(6);
+    expect(layout.pages).toHaveLength(1);
+    expect(
+      layout.pages[0].placements.filter((placement) => placement.decoration === 'runningHeader'),
+    ).toHaveLength(1);
+    expect(
+      layout.pages[0].placements
+        .filter((placement) => !placement.decoration)
+        .every(
+          (placement) =>
+            placement.type === 'text' && placement.text.includes('Body from source page'),
+        ),
+    ).toBe(true);
+    expect(collectCriticalIssues(original, reading, {}, layout)).toEqual([]);
+  });
+
+  it('keeps a tagged note reference with its body despite a large visual gap', () => {
+    const input = page([
+      item('body', 'A claim with a tagged reference', 48, 60, 220, 12),
+      { ...item('ref', '1', 360, 55, 8, 8), structureRoles: ['Reference'] },
+      { ...item('label', '1', 48, 650, 8, 8), structureRoles: ['Note', 'Lbl'] },
+      {
+        ...item('note', 'The original note content is kept together.', 60, 650, 250, 10),
+        structureRoles: ['Note', 'P'],
+      },
+    ]);
+    input.structure = [
+      { id: 'reference', role: 'Reference', sourceIds: ['ref'], order: 0 },
+      { id: 'note-group', role: 'Note', sourceIds: ['label', 'note'], order: 1 },
+      { id: 'note-label', role: 'Lbl', sourceIds: ['label'], parentId: 'note-group', order: 2 },
+    ];
+    const reading = analyzeDocument(source([input]));
+    const body = reading.blocks.find((block) => block.sourceIds.includes('body'))!;
+    expect(body.sourceIds).toEqual(['body', 'ref']);
+    expect(body.kind).toBe('paragraph');
+    expect(reading.references).toEqual([
+      expect.objectContaining({
+        source: { blockId: body.id, sourceId: 'ref' },
+        targetBlockId: reading.blocks.find((block) => block.semantic === 'note')!.id,
+      }),
+    ]);
+  });
+
+  it('anchors right-margin line numbers to the first run on the original row', () => {
+    const rows = Array.from({ length: 3 }, (_, index) => {
+      const y = 60 + index * 20;
+      return [
+        item(`start-${index}`, 'A', 48, y, 8, 12),
+        item(`body-${index}`, 'long original line continues through these words', 58, y, 390, 12),
+        item(`tail-${index}`, 'tail run', 450, y, 90, 12),
+        item(`number-${index}`, String(101 + index), 560, y + 3, 18, 8),
+      ];
+    });
+    const input = source([page(rows.flat())]);
+    const reading = analyzeDocument(input);
+    const numbers = reading.blocks.filter((block) => block.kind === 'lineNumber');
+    expect(numbers).toHaveLength(3);
+    expect(numbers.map((block) => block.anchor?.sourceId)).toEqual([
+      'start-0',
+      'start-1',
+      'start-2',
+    ]);
+    expect(reading.blocks.flatMap((block) => block.sourceIds).sort()).toEqual(
+      input.pages[0].items.map((entry) => entry.id).sort(),
+    );
+  });
+
   it('reconstructs a paragraph and keeps the raw line breaks separately', () => {
     const document = analyzeDocument(
       source([

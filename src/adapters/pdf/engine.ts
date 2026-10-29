@@ -5,6 +5,10 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { analyzeDocument, applyOverrides } from '../../core/analyze';
 import { layoutDocument } from '../../core/layout';
+import { attachStructure, markedContentAt } from './structure';
+import { addNoteLinks } from './note-links';
+import { textGeometry } from './text-geometry';
+import { detectGraphicRegions } from './graphics';
 import { validateConfig } from '../../core/config';
 import { collectCriticalIssues } from '../../core/issues';
 import type {
@@ -87,105 +91,17 @@ async function raster(page: PDFPageProxy, scale: number, rect?: Rect): Promise<O
   return canvas;
 }
 
-/** Find visible non-text ink; favor conservative preservation over dropped drawings. */
+/** Detect figures without allowing a merge to cross a flowing text paragraph. */
 async function detectGraphics(page: PDFPageProxy, source: SourcePage): Promise<Rect[]> {
   const scale = Math.min(1, 1400 / Math.max(source.width, source.height));
   const canvas = await raster(page, scale);
-  const ctx = canvas.getContext('2d')!;
-  const { width, height } = canvas;
-  const pixels = ctx.getImageData(0, 0, width, height).data;
-  const mask = new Uint8Array(width * height);
-  for (const item of source.items) {
-    const x0 = Math.max(0, Math.floor((item.x - 2) * scale));
-    const x1 = Math.min(width, Math.ceil((item.x + item.width + 2) * scale));
-    const y0 = Math.max(0, Math.floor((item.y - 2) * scale));
-    const y1 = Math.min(height, Math.ceil((item.y + item.height + 2) * scale));
-    for (let y = y0; y < y1; y++) mask.fill(1, y * width + x0, y * width + x1);
+  try {
+    const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+    return detectGraphicRegions(pixels, canvas.width, canvas.height, scale, source);
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
   }
-  const cell = Math.max(3, Math.round(6 * scale));
-  const cols = Math.ceil(width / cell),
-    rows = Math.ceil(height / cell);
-  const cells = new Uint16Array(cols * rows);
-  for (let y = 0; y < height; y++)
-    for (let x = 0; x < width; x++) {
-      const p = y * width + x,
-        k = p * 4;
-      if (
-        !mask[p] &&
-        Math.min(pixels[k], pixels[k + 1], pixels[k + 2]) < 218 &&
-        pixels[k + 3] > 50
-      ) {
-        cells[Math.floor(y / cell) * cols + Math.floor(x / cell)]++;
-      }
-    }
-  const regions: Rect[] = [];
-  const seen = new Uint8Array(cells.length);
-  for (let start = 0; start < cells.length; start++) {
-    if (seen[start] || cells[start] < 2) continue;
-    const queue = [start];
-    seen[start] = 1;
-    let minX = cols,
-      minY = rows,
-      maxX = 0,
-      maxY = 0,
-      ink = 0;
-    for (let head = 0; head < queue.length; head++) {
-      const p = queue[head],
-        x = p % cols,
-        y = Math.floor(p / cols);
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-      ink += cells[p];
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx,
-            ny = y + dy,
-            next = ny * cols + nx;
-          if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && !seen[next] && cells[next] >= 2) {
-            seen[next] = 1;
-            queue.push(next);
-          }
-        }
-    }
-    if (ink < 8) continue;
-    const x = Math.max(0, (minX * cell) / scale - 4),
-      y = Math.max(0, (minY * cell) / scale - 4);
-    regions.push({
-      x,
-      y,
-      width: Math.min(source.width - x, ((maxX + 1) * cell) / scale + 4 - x),
-      height: Math.min(source.height - y, ((maxY + 1) * cell) / scale + 4 - y),
-    });
-  }
-  for (let i = 0; i < regions.length; i++)
-    for (let j = i + 1; j < regions.length; j++) {
-      const a = regions[i],
-        b = regions[j],
-        gap = 14;
-      if (
-        a.x <= b.x + b.width + gap &&
-        a.x + a.width + gap >= b.x &&
-        a.y <= b.y + b.height + gap &&
-        a.y + a.height + gap >= b.y
-      ) {
-        const x = Math.min(a.x, b.x),
-          y = Math.min(a.y, b.y);
-        regions[i] = {
-          x,
-          y,
-          width: Math.max(a.x + a.width, b.x + b.width) - x,
-          height: Math.max(a.y + a.height, b.y + b.height) - y,
-        };
-        regions.splice(j, 1);
-        i = -1;
-        break;
-      }
-    }
-  canvas.width = 0;
-  canvas.height = 0;
-  return regions;
 }
 
 export async function extractPdf(
@@ -224,7 +140,11 @@ export async function extractPdf(
       });
       const page = await pdf.getPage(number),
         viewport = page.getViewport({ scale: 1 });
-      const content = await page.getTextContent({ disableNormalization: true });
+      const content = await page.getTextContent({
+        disableNormalization: true,
+        includeMarkedContent: true,
+      });
+      const marked = markedContentAt(content.items);
       const sourcePage: SourcePage = {
         number,
         width: viewport.width,
@@ -235,30 +155,46 @@ export async function extractPdf(
         warnings: [],
       };
       const scale = Math.hypot(viewport.transform[0], viewport.transform[1]);
+      let directionalCharacters = 0;
+      let characterCount = 0;
       for (let i = 0; i < content.items.length; i++) {
         const item = content.items[i];
         if (!('str' in item) || !item.str.trim()) continue;
         const transform = Util.transform(viewport.transform, item.transform);
-        const size = Math.hypot(transform[2], transform[3]) || item.height * scale;
         const style = content.styles[item.fontName];
         const ascent = style?.ascent ?? 0.85,
           descent = style?.descent ?? -0.2;
+        const geometry = textGeometry(
+          transform,
+          item.width * scale,
+          item.height * scale,
+          ascent,
+          descent,
+        );
+        const directional = item.dir === 'ttb' || item.dir === 'rtl';
+        characterCount += item.str.trim().length;
+        if (directional) directionalCharacters += item.str.trim().length;
         sourcePage.items.push({
           id: `p${number}-t${i}`,
           text: item.str,
-          x: transform[4],
-          y: transform[5] - size * ascent,
-          width: item.width * scale,
-          height: Math.max(size * (ascent - descent), size),
-          fontSize: size,
+          ...geometry.rect,
+          fontSize: geometry.fontSize,
+          ...(geometry.preserve || directional
+            ? { preserve: true, rotation: geometry.rotation }
+            : {}),
           fontName: `${style?.fontFamily ?? ''} ${item.fontName}`,
           hasEOL: item.hasEOL,
+          ...marked.get(i),
         });
-        if (Math.abs(transform[1]) > 0.1 || item.dir === 'ttb' || item.dir === 'rtl') {
-          sourcePage.warnings.push(
-            '회전 문자·세로쓰기·오른쪽에서 왼쪽 쓰기는 페이지 원형으로 보존합니다.',
-          );
-        }
+      }
+      if (directionalCharacters > characterCount * 0.5)
+        sourcePage.warnings.push(
+          '세로쓰기·오른쪽에서 왼쪽 쓰기를 주로 사용하는 페이지는 원형으로 보존합니다.',
+        );
+      try {
+        attachStructure(sourcePage, await page.getStructTree());
+      } catch {
+        // Optional tagging must never prevent extraction of visible page content.
       }
       const annotations = await page.getAnnotations({ intent: 'display' });
       const omittedAnnotation = annotations.some((annotation) => {
@@ -366,6 +302,11 @@ export async function exportPdf(
     ...reading,
     blocks: reading.blocks.filter((block) => selected.has(block.sourcePage)),
   };
+  const selectedBlocks = new Set(scopedReading.blocks.map((block) => block.id));
+  scopedReading.references = reading.references?.filter(
+    (reference) =>
+      selectedBlocks.has(reference.source.blockId) && selectedBlocks.has(reference.targetBlockId),
+  );
   const effective = applyOverrides(scopedReading, overrides);
   if (!effective.blocks.length)
     throw new Error('변환할 내용이 없습니다. 제외 설정을 확인해 주세요.');
@@ -460,10 +401,15 @@ export async function exportPdf(
     page.placements.every(
       (placement) =>
         [placement.x, placement.y, placement.width, placement.height].every(Number.isFinite) &&
-        placement.x >= config.marginLeftPt - 0.1 &&
-        placement.y >= config.marginTopPt - 0.1 &&
-        placement.x + placement.width <= config.pageWidthPt - config.marginRightPt + 0.1 &&
-        placement.y + placement.height <= config.pageHeightPt - config.marginBottomPt + 0.1,
+        (placement.decoration === 'runningHeader' || placement.decoration === 'runningFooter'
+          ? placement.x >= 0 &&
+            placement.y >= 0 &&
+            placement.x + placement.width <= config.pageWidthPt + 0.1 &&
+            placement.y + placement.height <= config.pageHeightPt + 0.1
+          : placement.x >= config.marginLeftPt - 0.1 &&
+            placement.y >= config.marginTopPt - 0.1 &&
+            placement.x + placement.width <= config.pageWidthPt - config.marginRightPt + 0.1 &&
+            placement.y + placement.height <= config.pageHeightPt - config.marginBottomPt + 0.1),
     ),
   );
   if (!layout.pages.length || !inBounds)
@@ -499,7 +445,7 @@ export async function exportPdf(
               y: config.pageHeightPt - placement.y - placement.fontSize,
               size: placement.fontSize,
               font: run.font,
-              color,
+              color: placement.decoration ? rgb(0.44, 0.42, 0.39) : color,
             });
             x += run.font.widthOfTextAtSize(run.text, placement.fontSize);
           }
@@ -533,6 +479,7 @@ export async function exportPdf(
         color,
       });
     }
+    addNoteLinks(output, effective, layout, measure);
     output.setTitle(`${scope === 'preview' ? '[PREVIEW] ' : ''}${source.name} - PDF Reflow`);
     output.setCreator(`PDF Reflow ${__APP_VERSION__}`);
     output.setProducer('pdf-lib + PDF.js');
