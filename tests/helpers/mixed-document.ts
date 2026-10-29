@@ -3,7 +3,7 @@ import type { PDFFont, PDFPage } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 
 /** Original synthetic content, created for this project; no third-party source PDF. */
-export const DEMO_MANIFEST = {
+export const FIXTURE_MANIFEST = {
   schemaVersion: 1,
   title: 'PDF Reflow Lab - synthetic mixed document',
   pages: 3,
@@ -83,7 +83,7 @@ function rule(page: PDFPage, y: number) {
   });
 }
 
-export async function generateDemoPdf(
+export async function generateMixedDocumentPdf(
   loadFont: (name: string) => Promise<Uint8Array>,
 ): Promise<Uint8Array> {
   const document = await PDFDocument.create();
@@ -96,7 +96,7 @@ export async function generateDemoPdf(
   const regular = await document.embedFont(regularBytes, { subset: true });
   const bold = await document.embedFont(boldBytes, { subset: true });
   const korean = await document.embedFont(cjkBytes, { subset: true });
-  document.setTitle(DEMO_MANIFEST.title);
+  document.setTitle(FIXTURE_MANIFEST.title);
   document.setAuthor('PDF Reflow contributors');
   document.setCreator('pdf-reformatter synthetic fixture generator');
   document.setCreationDate(new Date('2026-10-29T00:00:00.000Z'));

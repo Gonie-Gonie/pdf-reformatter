@@ -254,7 +254,7 @@ test('invalid PDF fails safely and cancelling a conversion permits a new convers
   await convert(page);
 });
 
-test('demo and document workspace fit a mobile viewport without horizontal overflow', async ({
+test('landing and uploaded document workspace fit a mobile viewport without horizontal overflow', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -262,7 +262,10 @@ test('demo and document workspace fit a mobile viewport without horizontal overf
   const overflow = () =>
     page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   expect(await overflow()).toBe(false);
-  await page.getByRole('button', { name: /^예제 PDF로 체험하기/ }).click();
+  await page.locator('#pdf-file-input').setInputFiles(fixture);
+  await expect(page.getByRole('heading', { name: fixtureName, exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
   await expect(page.getByRole('button', { name: '전체 변환', exact: true })).toBeEnabled({
     timeout: 60_000,
   });

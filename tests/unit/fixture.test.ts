@@ -3,17 +3,17 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { DEMO_MANIFEST, generateDemoPdf } from '../../src/adapters/pdf/demo';
+import { FIXTURE_MANIFEST, generateMixedDocumentPdf } from '../helpers/mixed-document';
 
 const fontData = async (name: string) =>
   new Uint8Array(await readFile(new URL(`../../public/fonts/${name}`, import.meta.url)));
 
 describe('synthetic PDF and Korean font regression', () => {
   it('generates a complete mixed three-page PDF from bundled fonts', async () => {
-    const bytes = await generateDemoPdf(fontData);
+    const bytes = await generateMixedDocumentPdf(fontData);
     const document = await PDFDocument.load(bytes);
-    expect(document.getPageCount()).toBe(DEMO_MANIFEST.pages);
-    expect(document.getTitle()).toBe(DEMO_MANIFEST.title);
+    expect(document.getPageCount()).toBe(FIXTURE_MANIFEST.pages);
+    expect(document.getTitle()).toBe(FIXTURE_MANIFEST.title);
     expect(bytes.byteLength).toBeGreaterThan(10000);
   });
 

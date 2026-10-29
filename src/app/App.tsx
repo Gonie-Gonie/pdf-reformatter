@@ -4,7 +4,6 @@ import {
   cancelJob,
   clearDocument,
   convertPdf,
-  createDemoPdf,
   getSourceBytes,
 } from '../adapters/pdf/client';
 import {
@@ -28,8 +27,6 @@ import type {
 } from '../core/model';
 import { Icon } from '../components/Icon';
 import { PdfViewer } from '../components/PdfViewer';
-
-declare const __APP_VERSION__: string;
 
 const kindLabels: Record<BlockKind, string> = {
   heading: '제목',
@@ -76,7 +73,7 @@ function escapeHtml(value: string) {
 
 function App() {
   const [config, setConfig] = useState<LayoutConfig>({ ...DEFAULT_CONFIG });
-  const [unit, setUnit] = useState<'pt' | 'mm'>('pt');
+  const [unit, setUnit] = useState<'pt' | 'mm'>('mm');
   const [source, setSource] = useState<SourceDocument | null>(null);
   const [sourceBytes, setSourceBytes] = useState<Uint8Array | null>(null);
   const [reading, setReading] = useState<ReadingDocument | null>(null);
@@ -104,7 +101,6 @@ function App() {
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [password, setPassword] = useState('');
   const [dragging, setDragging] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const projectInput = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
@@ -132,7 +128,7 @@ function App() {
     };
   }, []);
   useEffect(() => {
-    if (!helpOpen && !passwordRequired) return;
+    if (!passwordRequired) return;
     const previous = document.activeElement as HTMLElement | null;
     const timer = window.setTimeout(() => {
       (
@@ -142,7 +138,6 @@ function App() {
     }, 0);
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setHelpOpen(false);
         setPasswordRequired(false);
         setPassword('');
       }
@@ -169,7 +164,7 @@ function App() {
       document.removeEventListener('keydown', onKey);
       previous?.focus();
     };
-  }, [helpOpen, passwordRequired]);
+  }, [passwordRequired]);
 
   const effectiveBlocks = useMemo(() => {
     if (!reading) return [];
@@ -315,32 +310,6 @@ function App() {
       const message = caught instanceof Error ? caught.message : 'PDF를 열지 못했습니다.';
       setError(message);
       if (/password|암호|비밀번호/i.test(message)) setPasswordRequired(true);
-    } finally {
-      if (generation.current === job) {
-        setBusy(false);
-        setProgress(null);
-      }
-    }
-  }
-  async function openDemo() {
-    if (busy) return;
-    const job = ++generation.current;
-    setError('');
-    setBusy(true);
-    setProgress({
-      stage: 'loading',
-      current: 0,
-      total: 1,
-      message: '예제 PDF를 준비하는 중입니다.',
-    });
-    try {
-      const file = await createDemoPdf();
-      if (generation.current !== job) return;
-      setBusy(false);
-      await openFile(file);
-    } catch (caught) {
-      if (generation.current === job)
-        setError(caught instanceof Error ? caught.message : '예제 PDF를 만들지 못했습니다.');
     } finally {
       if (generation.current === job) {
         setBusy(false);
@@ -511,12 +480,17 @@ function App() {
     }
   }
 
+  function displayDimension(value: number) {
+    return unit === 'mm'
+      ? Math.round(((value * 25.4) / 72) * 10) / 10
+      : Math.round(value * 100) / 100;
+  }
+  function presetSize(width: number, height: number) {
+    return `${displayDimension(width)} × ${displayDimension(height)} ${unit}`;
+  }
   function numberField(key: NumericConfig, label: string, dimensions = false, step = 1) {
     const raw = config[key];
-    const displayed =
-      dimensions && unit === 'mm'
-        ? Math.round(((raw * 25.4) / 72) * 10) / 10
-        : Math.round(raw * 100) / 100;
+    const displayed = dimensions ? displayDimension(raw) : Math.round(raw * 100) / 100;
     return (
       <label className="number-field" key={key}>
         <span>{label}</span>
@@ -538,16 +512,8 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header" inert={helpOpen || passwordRequired}>
-        <a
-          className="brand"
-          href="#"
-          aria-label="PDF Reflow 처음 화면"
-          onClick={(event) => {
-            event.preventDefault();
-            if (!source) setHelpOpen(false);
-          }}
-        >
+      <header className="app-header" inert={passwordRequired}>
+        <a className="brand" href="#" aria-label="PDF Reflow 처음 화면">
           <span className="brand-symbol">
             <Icon name="book" size={22} />
           </span>
@@ -557,10 +523,6 @@ function App() {
           </span>
         </a>
         <div className="header-right">
-          <span className="local-badge">
-            <span />
-            파일은 이 기기에만
-          </span>
           <button
             className="mobile-settings-button"
             aria-label="읽기 환경으로 이동"
@@ -568,31 +530,33 @@ function App() {
           >
             <Icon name="settings" size={18} />
           </button>
-          <button className="text-button help-button" onClick={() => setHelpOpen(true)}>
-            사용 안내 <Icon name="chevron" size={13} />
-          </button>
         </div>
       </header>
 
-      <div className="workspace" inert={helpOpen || passwordRequired}>
+      <div className="workspace" inert={passwordRequired}>
         <aside
           id="reading-settings"
           tabIndex={-1}
           className="settings-sidebar"
           aria-label="읽기본 설정"
         >
-          <div className="sidebar-heading">
-            <span className="eyebrow">YOUR READING FORMAT</span>
-            <h2>
-              읽기 환경 <Icon name="settings" size={18} />
-            </h2>
-            <p>내 화면과 읽는 속도에 맞추세요.</p>
-          </div>
           <div className="settings-section">
             <div className="section-label">
-              <span>화면 프리셋</span>
-              <span className="label-meta">PDF 크기</span>
+              <span>페이지 크기</span>
+              <div className="unit-toggle" aria-label="크기 단위">
+                <button className={unit === 'mm' ? 'active' : ''} onClick={() => setUnit('mm')}>
+                  mm
+                </button>
+                <button className={unit === 'pt' ? 'active' : ''} onClick={() => setUnit('pt')}>
+                  pt
+                </button>
+              </div>
             </div>
+            <div className="field-pair">
+              {numberField('pageWidthPt', '가로', true, 0.1)}
+              {numberField('pageHeightPt', '세로', true, 0.1)}
+            </div>
+            <p className="preset-label">preset</p>
             <div className="preset-grid">
               <button
                 disabled={busy}
@@ -601,7 +565,7 @@ function App() {
               >
                 <span className="device-shape fold" />
                 <strong>Fold7</strong>
-                <small>492 × 546</small>
+                <small>{presetSize(492, 546)}</small>
               </button>
               <button
                 disabled={busy}
@@ -618,7 +582,7 @@ function App() {
               >
                 <span className="device-shape phone" />
                 <strong>스마트폰</strong>
-                <small>360 × 640</small>
+                <small>{presetSize(360, 640)}</small>
               </button>
               <button
                 disabled={busy}
@@ -629,23 +593,8 @@ function App() {
               >
                 <span className="device-shape sheet" />
                 <strong>A5</strong>
-                <small>420 × 595</small>
+                <small>{presetSize(419.53, 595.28)}</small>
               </button>
-            </div>
-            <div className="section-label dimensions-label">
-              <span>페이지 크기</span>
-              <div className="unit-toggle" aria-label="크기 단위">
-                <button className={unit === 'pt' ? 'active' : ''} onClick={() => setUnit('pt')}>
-                  pt
-                </button>
-                <button className={unit === 'mm' ? 'active' : ''} onClick={() => setUnit('mm')}>
-                  mm
-                </button>
-              </div>
-            </div>
-            <div className="field-pair">
-              {numberField('pageWidthPt', '가로', true, 0.1)}
-              {numberField('pageHeightPt', '세로', true, 0.1)}
             </div>
           </div>
           <div className="settings-section">
@@ -672,10 +621,8 @@ function App() {
               {numberField('fontSizePt', '글자 크기', false, 0.1)}
               {numberField('lineHeightPt', '줄 간격', false, 0.1)}
             </div>
-            <details className="advanced-settings">
-              <summary>
-                여백과 문단 <Icon name="chevron" size={13} />
-              </summary>
+            <div className="margin-settings">
+              <p className="margin-settings-label">여백과 문단</p>
               <div className="field-pair">
                 {numberField('marginTopPt', '위 여백', true, 0.1)}
                 {numberField('marginBottomPt', '아래 여백', true, 0.1)}
@@ -683,7 +630,7 @@ function App() {
                 {numberField('marginRightPt', '오른쪽 여백', true, 0.1)}
               </div>
               {numberField('paragraphGapPt', '문단 간격', false, 0.1)}
-            </details>
+            </div>
             <div className="section-label theme-label">
               <span>종이와 글자</span>
             </div>
@@ -713,17 +660,6 @@ function App() {
               기본 설정으로
             </button>
           </div>
-          <div className="sidebar-note">
-            <Icon name="shield" size={19} />
-            <p>
-              본문은 자연스럽게 줄바꿈하고,
-              <br />
-              수식과 도표는 원형을 보존합니다.
-            </p>
-          </div>
-          <div className="preset-footnote">
-            Fold7 수치 기반 · 색상과 상하 여백은 임시 기본값입니다. 승인본 대조는 별도로 필요합니다.
-          </div>
           <button
             className="small-button mobile-return-button"
             onClick={() => jumpTo('document-workspace')}
@@ -731,10 +667,6 @@ function App() {
             <Icon name="up" size={15} />
             {source ? '원문과 변환으로 돌아가기' : 'PDF 선택으로 돌아가기'}
           </button>
-          <div className="sidebar-footer">
-            <span>PDF REFLOW</span>
-            <code>{typeof __APP_VERSION__ === 'undefined' ? 'local' : __APP_VERSION__}</code>
-          </div>
         </aside>
 
         <main
@@ -830,21 +762,6 @@ function App() {
 
           {!source ? (
             <div className="welcome-screen">
-              <div className="welcome-heading">
-                <div className="eyebrow">
-                  <span className="small-rule" /> MADE FOR READING
-                </div>
-                <h1>
-                  한 페이지를,
-                  <br />
-                  <em>읽기 편한 너비로.</em>
-                </h1>
-                <p>
-                  작은 글자를 확대하고, 화면을 옮기는 대신.
-                  <br />
-                  논문과 기술문서를 내 화면에 맞게 다시 조판하세요.
-                </p>
-              </div>
               <div
                 className={`upload-area ${dragging ? 'dragging' : ''}`}
                 onDragOver={(event) => {
@@ -872,41 +789,6 @@ function App() {
                   <Icon name="folder" size={17} />
                   PDF 선택
                   <Icon name="arrow" size={17} />
-                </button>
-                <span className="upload-hint">텍스트 기반 PDF 권장 · 서버 업로드 없음</span>
-              </div>
-              <div className="demo-row">
-                <span>먼저 살펴보고 싶다면</span>
-                <button className="text-button" disabled={busy} onClick={() => void openDemo()}>
-                  예제 PDF로 체험하기 <Icon name="arrow" size={15} />
-                </button>
-              </div>
-              <div className="how-it-works">
-                <div>
-                  <span className="step-number">01</span>
-                  <strong>원문 그대로 열고</strong>
-                  <p>파일은 브라우저 안에서 처리합니다.</p>
-                </div>
-                <div>
-                  <span className="step-number">02</span>
-                  <strong>읽는 방식에 맞추고</strong>
-                  <p>화면 크기, 글자, 여백을 조절합니다.</p>
-                </div>
-                <div>
-                  <span className="step-number">03</span>
-                  <strong>새로운 읽기본으로</strong>
-                  <p>읽기본과 원문 대조본을 저장합니다.</p>
-                </div>
-              </div>
-              <div className="welcome-bottom">
-                <Icon name="shield" size={14} />
-                <span>계정도, API 키도 필요하지 않습니다.</span>
-                <button
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() => projectInput.current?.click()}
-                >
-                  작업 파일 가져오기
                 </button>
               </div>
             </div>
@@ -1586,59 +1468,6 @@ function App() {
                 <Icon name="arrow" size={17} />
               </button>
             </form>
-          </section>
-        </div>
-      )}
-      {helpOpen && (
-        <div className="modal-backdrop" onClick={() => setHelpOpen(false)}>
-          <section
-            className="dialog-card help-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="help-heading"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <button
-              className="icon-button dialog-close"
-              aria-label="사용 안내 닫기"
-              onClick={() => setHelpOpen(false)}
-            >
-              <Icon name="close" />
-            </button>
-            <span className="eyebrow">A LITTLE GUIDE</span>
-            <h2 id="help-heading">PDF를 더 편안하게 읽는 방법</h2>
-            <ol>
-              <li>
-                <strong>PDF를 엽니다.</strong>
-                <p>텍스트 기반 PDF를 권장합니다. 스캔본은 OCR 없이 원형 보존합니다.</p>
-              </li>
-              <li>
-                <strong>내 화면에 맞춥니다.</strong>
-                <p>Fold7 프리셋으로 시작하거나 페이지와 글자 크기를 직접 정하세요.</p>
-              </li>
-              <li>
-                <strong>영역을 검토하고 변환합니다.</strong>
-                <p>
-                  잘못 분석된 본문은 ‘원형 보존’으로 바꾸고, 순서와 텍스트를 보정할 수 있습니다.
-                </p>
-              </li>
-              <li>
-                <strong>결과를 확인하고 저장합니다.</strong>
-                <p>읽기본, 원문 대조 합본, 검증 보고서를 받을 수 있습니다.</p>
-              </li>
-            </ol>
-            <div className="help-privacy">
-              <Icon name="shield" size={18} />
-              <p>
-                PDF 내용과 파일명은 외부로 전송하지 않습니다. 앱 자산은 호스팅 서버에서
-                내려받습니다. 브라우저 저장은 영구 보관을 보장하지 않으므로 중요한 보정은 작업
-                파일로 내보내세요.
-              </p>
-            </div>
-            <p className="help-limit">
-              복잡한 다단 문서, 특수 글꼴, 수식, 주석·양식·책갈피는 제한이 있습니다. 문서의 서명
-              효력은 변환본으로 이어지지 않으며, 원형 보존은 기밀 삭제 기능이 아닙니다.
-            </p>
           </section>
         </div>
       )}

@@ -121,12 +121,3 @@ export function convertPdf(
     onProgress,
   );
 }
-export async function createDemoPdf(): Promise<File> {
-  const { generateDemoPdf } = await import('./demo');
-  const bytes = await generateDemoPdf(async (name) => {
-    const response = await fetch(`${import.meta.env.BASE_URL}fonts/${name}`);
-    if (!response.ok) throw new Error('예제 글꼴을 불러오지 못했습니다.');
-    return new Uint8Array(await response.arrayBuffer());
-  });
-  return new File([bytes.slice().buffer], 'PDF-Reflow-demo.pdf', { type: 'application/pdf' });
-}
