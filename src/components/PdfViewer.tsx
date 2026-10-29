@@ -5,6 +5,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ChevronLeft, ChevronRight, Minus, Plus, Maximize2 } from 'lucide-react';
 import { getSourcePassword } from '../adapters/pdf/client';
 import type { Rect } from '../core/model';
+import type { PageAnchor } from '../core/navigation';
 import './PdfViewer.css';
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
   onPageChange?: (page: number) => void;
   label: string;
   highlight?: Rect | null;
+  scrollTarget?: PageAnchor | null;
 }
 interface RenderedPage {
   pdf: PDFDocumentProxy;
@@ -23,7 +25,7 @@ interface RenderedPage {
   height: number;
   scale: number;
 }
-export function PdfViewer({ data, page, onPageChange, label, highlight }: Props) {
+export function PdfViewer({ data, page, onPageChange, label, highlight, scrollTarget }: Props) {
   const [loaded, setLoaded] = useState<{ data: Uint8Array; pdf: PDFDocumentProxy } | null>(null);
   const [error, setError] = useState('');
   const [availableWidth, setAvailableWidth] = useState(420),
@@ -33,6 +35,11 @@ export function PdfViewer({ data, page, onPageChange, label, highlight }: Props)
     scroll = useRef<HTMLDivElement>(null),
     canvas = useRef<HTMLCanvasElement>(null);
   const activeRender = useRef<RenderTask | null>(null);
+  const lastScroll = useRef<{
+    pdf: PDFDocumentProxy;
+    page: number;
+    target: PageAnchor | null;
+  } | null>(null);
   const pdf = loaded?.data === data ? loaded.pdf : null;
   const current = Math.min(Math.max(1, page), pdf?.numPages ?? 1);
   const currentPage = rendered?.pdf === pdf && rendered?.page === current ? rendered : null;
@@ -160,6 +167,40 @@ export function PdfViewer({ data, page, onPageChange, label, highlight }: Props)
       task?.cancel();
     };
   }, [pdf, current, availableWidth, zoom]);
+  useEffect(() => {
+    if (!currentPage || !ready) return;
+    const target = scrollTarget?.page === current ? scrollTarget : null;
+    const previous = lastScroll.current;
+    if (previous?.pdf === pdf && previous.page === current && previous.target === target) return;
+    const viewport = scroll.current;
+    const paper = canvas.current?.parentElement;
+    if (!viewport || !paper) return;
+    if (target) {
+      const viewportRect = viewport.getBoundingClientRect();
+      const paperRect = paper.getBoundingClientRect();
+      const style = getComputedStyle(viewport);
+      viewport.scrollTo({
+        top: Math.max(
+          0,
+          paperRect.top -
+            viewportRect.top +
+            viewport.scrollTop +
+            target.rect.y * currentPage.scale -
+            parseFloat(style.paddingTop),
+        ),
+        left: Math.max(
+          0,
+          paperRect.left -
+            viewportRect.left +
+            viewport.scrollLeft +
+            target.rect.x * currentPage.scale -
+            parseFloat(style.paddingLeft),
+        ),
+        behavior: 'auto',
+      });
+    } else viewport.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    lastScroll.current = { pdf: currentPage.pdf, page: current, target };
+  }, [currentPage, ready, scrollTarget, current, pdf]);
   const dimensions = rendered ?? { width: 1, height: 1, scale: 1 };
   return (
     <section

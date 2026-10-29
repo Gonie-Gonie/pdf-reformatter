@@ -8,6 +8,8 @@ import {
 } from '../adapters/pdf/client';
 import { downloadFile } from '../adapters/platform/download';
 import { DEFAULT_CONFIG, validateConfig } from '../core/config';
+import { buildPageLinks } from '../core/navigation';
+import type { PageAnchor, PageLink, PageLinks } from '../core/navigation';
 import type {
   ConversionResult,
   CriticalIssue,
@@ -47,6 +49,7 @@ function App() {
   const [unit, setUnit] = useState<'mm' | 'pt'>('mm');
   const [session, setSession] = useState<DocumentSession | null>(null);
   const [result, setResult] = useState<ConversionResult | null>(null);
+  const [pageLinks, setPageLinks] = useState<PageLinks | null>(null);
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -54,6 +57,8 @@ function App() {
   const [tab, setTab] = useState<Tab>('preview');
   const [sourcePage, setSourcePage] = useState(1);
   const [outputPage, setOutputPage] = useState(1);
+  const [sourceTarget, setSourceTarget] = useState<PageAnchor | null>(null);
+  const [outputTarget, setOutputTarget] = useState<PageAnchor | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [previewRevision, setPreviewRevision] = useState(0);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -81,6 +86,8 @@ function App() {
         full ? undefined : previewPages(document.source.pageCount),
       );
       if (generation.current !== job) return;
+      const links = buildPageLinks(converted.source, converted.reading, converted.layout);
+      const first = links.byOutput.get(1);
       const nextSession = {
         ...document,
         source: converted.source,
@@ -89,8 +96,12 @@ function App() {
       sessionRef.current = nextSession;
       setSession(nextSession);
       setResult(converted);
+      setPageLinks(links);
       setStale(false);
+      setSourcePage(first?.source.page ?? 1);
       setOutputPage(1);
+      setSourceTarget(first ? { ...first.source } : null);
+      setOutputTarget(first ? { ...first.output } : null);
       setSelectedIssueId((previous) =>
         converted.issues.some((issue) => issue.id === previous) ? previous : null,
       );
@@ -176,6 +187,7 @@ function App() {
   }, [passwordRequired]);
 
   async function openFile(file: File, suppliedPassword?: string) {
+    if (sessionRef.current || busyRef.current) return;
     const job = ++generation.current;
     window.clearTimeout(previewTimer.current);
     clearDocument();
@@ -184,6 +196,7 @@ function App() {
     busyRef.current = true;
     setSession(null);
     setResult(null);
+    setPageLinks(null);
     setStale(false);
     setBusy(true);
     setError('');
@@ -193,6 +206,8 @@ function App() {
     setSelectedIssueId(null);
     setSourcePage(1);
     setOutputPage(1);
+    setSourceTarget(null);
+    setOutputTarget(null);
     setTab('preview');
     try {
       const analyzed = await analyzePdf(
@@ -250,6 +265,9 @@ function App() {
     busyRef.current = false;
     setSession(null);
     setResult(null);
+    setPageLinks(null);
+    setSourceTarget(null);
+    setOutputTarget(null);
     setStale(false);
     setBusy(false);
     setProgress(null);
@@ -288,18 +306,53 @@ function App() {
     markChanged();
   }
 
+  function navigateLink(link: PageLink) {
+    setSourcePage(link.source.page);
+    setOutputPage(link.output.page);
+    setSourceTarget({ ...link.source });
+    setOutputTarget({ ...link.output });
+  }
+
+  function changeSourcePage(page: number) {
+    const next = Math.min(session?.source.pageCount ?? 1, Math.max(1, Math.trunc(page) || 1));
+    const link = pageLinks?.bySource.get(next);
+    if (link) navigateLink(link);
+    else {
+      setSourcePage(next);
+      setSourceTarget(null);
+    }
+  }
+
+  function changeOutputPage(page: number) {
+    const next = Math.min(result?.layout.pages.length ?? 1, Math.max(1, Math.trunc(page) || 1));
+    const link = pageLinks?.byOutput.get(next);
+    if (link) navigateLink(link);
+    else {
+      setOutputPage(next);
+      setOutputTarget(null);
+    }
+  }
+
   function selectIssue(issue: CriticalIssue) {
     setSelectedIssueId(issue.id);
-    setSourcePage(issue.sourcePage);
-    const page = result?.layout.pages.find((item) => item.sourcePages.includes(issue.sourcePage));
-    if (page) setOutputPage(page.number);
+    changeSourcePage(issue.sourcePage);
+    if (issue.rect) setSourceTarget({ page: issue.sourcePage, rect: issue.rect });
+    if (!issue.blockId) return;
+    const page = result?.layout.pages.find((item) =>
+      item.placements.some((placement) => placement.blockId === issue.blockId),
+    );
+    const placement = page?.placements.find((item) => item.blockId === issue.blockId);
+    if (page && placement) {
+      setOutputPage(page.number);
+      setOutputTarget({ page: page.number, rect: placement });
+    }
   }
 
   function downloadResult() {
     if (!result || result.scope !== 'full' || stale || busy || !session) return;
     downloadFile(
       result.readingPdf,
-      `${safeName(session.source.name)}-reading.pdf`,
+      `${safeName(session.source.name)}-formatted.pdf`,
       'application/pdf',
     );
   }
@@ -513,7 +566,7 @@ function App() {
             type="file"
             accept=".pdf,application/pdf"
             className="visually-hidden"
-            disabled={busy}
+            disabled={busy || Boolean(session)}
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void openFile(file);
@@ -538,14 +591,6 @@ function App() {
                     </div>
                   </div>
                   <div className="document-actions">
-                    <button
-                      className="small-button"
-                      disabled={busy}
-                      onClick={() => fileInput.current?.click()}
-                    >
-                      <Icon name="folder" size={15} />
-                      다른 PDF
-                    </button>
                     <button
                       className="icon-button"
                       disabled={busy}
@@ -711,7 +756,8 @@ function App() {
                   <PdfViewer
                     data={session.bytes}
                     page={sourcePage}
-                    onPageChange={setSourcePage}
+                    onPageChange={changeSourcePage}
+                    scrollTarget={sourceTarget}
                     label="원문"
                     highlight={
                       tab === 'review' && selectedIssue?.sourcePage === sourcePage
@@ -722,7 +768,8 @@ function App() {
                   <PdfViewer
                     data={result?.readingPdf ?? null}
                     page={outputPage}
-                    onPageChange={setOutputPage}
+                    onPageChange={changeOutputPage}
+                    scrollTarget={outputTarget}
                     label="변환 결과"
                   />
                 </div>

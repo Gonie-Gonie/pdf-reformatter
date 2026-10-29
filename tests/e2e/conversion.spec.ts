@@ -48,7 +48,7 @@ async function download(page: Page, info: TestInfo) {
   return { name: result.suggestedFilename(), bytes: await readFile(path) };
 }
 
-async function outputText(bytes: Uint8Array): Promise<string> {
+async function outputText(bytes: Uint8Array, pageNumber?: number): Promise<string> {
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const task = getDocument({
     data: new Uint8Array(bytes),
@@ -59,7 +59,7 @@ async function outputText(bytes: Uint8Array): Promise<string> {
   const pdf = await task.promise;
   try {
     const pages: string[] = [];
-    for (let number = 1; number <= pdf.numPages; number++) {
+    for (let number = pageNumber ?? 1; number <= (pageNumber ?? pdf.numPages); number++) {
       const sourcePage = await pdf.getPage(number);
       const content = await sourcePage.getTextContent({ disableNormalization: true });
       pages.push(content.items.flatMap((item) => ('str' in item ? [item.str] : [])).join(' '));
@@ -174,7 +174,7 @@ test('local conversion preserves Korean, English and column order in the result 
   await convert(page);
 
   const downloaded = await download(page, info);
-  expect(downloaded.name).toBe('mixed-document-reading.pdf');
+  expect(downloaded.name).toBe('mixed-document-formatted.pdf');
   const document = await PDFDocument.load(downloaded.bytes);
   expect(document.getPageCount()).toBeGreaterThan(0);
   for (const outputPage of document.getPages()) {
@@ -205,9 +205,7 @@ test('local conversion preserves Korean, English and column order in the result 
   expect(pageErrors).toEqual([]);
 });
 
-test('upload previews only ten source pages and full conversion includes the remaining pages', async ({
-  page,
-}, info) => {
+test('preview and full conversion both link pages using their content', async ({ page }, info) => {
   await page.goto('');
   await uploadPdf(page, {
     name: 'twelve-pages.pdf',
@@ -218,7 +216,17 @@ test('upload previews only ten source pages and full conversion includes the rem
     'data-selected-pages',
     Array.from({ length: 10 }, (_, index) => index + 1).join(','),
   );
-  await expect(page.getByLabel('원문 페이지', { exact: true })).toHaveAttribute('max', '12');
+  const sourcePage = page.getByLabel('원문 페이지', { exact: true });
+  const outputPage = page.getByLabel('변환 결과 페이지', { exact: true });
+  await expect(sourcePage).toHaveAttribute('max', '12');
+  await outputPage.fill((await outputPage.getAttribute('max'))!);
+  await viewersReady(page);
+  await expect(sourcePage).toHaveValue('10');
+  await sourcePage.fill('1');
+  await viewersReady(page);
+  await expect(outputPage).toHaveValue('1');
+  await expect(page.locator(resultToolbar)).toHaveAttribute('data-scope', 'preview');
+
   await convert(page);
   await expect(page.locator(resultToolbar)).toHaveAttribute(
     'data-selected-pages',
@@ -235,6 +243,19 @@ test('upload previews only ten source pages and full conversion includes the rem
     expect(end, `source page ${number} end`).toBeGreaterThan(start);
     previousEnd = end;
   }
+
+  await outputPage.fill((await outputPage.getAttribute('max'))!);
+  await viewersReady(page);
+  await expect(sourcePage).toHaveValue('12');
+
+  await sourcePage.fill('2');
+  await viewersReady(page);
+  const linkedPage = Number(await outputPage.inputValue());
+  expect(await outputText(downloaded.bytes, linkedPage)).toContain('SourcePage002 begins here.');
+
+  await outputPage.fill('1');
+  await viewersReady(page);
+  await expect(sourcePage).toHaveValue('1');
 });
 
 test('an invalid file and cancellation both permit a new full conversion', async ({
