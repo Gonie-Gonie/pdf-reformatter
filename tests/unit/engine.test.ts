@@ -243,7 +243,9 @@ describe('source analysis and ownership', () => {
         page([item('1', 'A hyphenated techni-'), item('2', 'cal word remains explicit.', 36, 57)]),
       ]),
     );
-    expect(document.blocks[0].text).toContain('techni- cal');
+    expect(document.blocks[0].text).toBe('A hyphenated techni-cal word remains explicit.');
+    expect(document.blocks[0].rawText).toBe('A hyphenated techni-\ncal word remains explicit.');
+    expect(document.blocks[0].sourceIds).toEqual(['1', '2']);
   });
   it('orders two columns left to right while keeping a full-width heading', () => {
     const input = page([
