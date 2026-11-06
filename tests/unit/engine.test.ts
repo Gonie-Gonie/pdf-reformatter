@@ -157,14 +157,16 @@ describe('source analysis and ownership', () => {
     expect(
       layout.pages[0].placements.filter((placement) => placement.decoration === 'runningHeader'),
     ).toHaveLength(1);
+    const body = layout.pages[0].placements.filter((placement) => !placement.decoration);
+    expect(body.every((placement) => placement.type === 'text')).toBe(true);
     expect(
-      layout.pages[0].placements
-        .filter((placement) => !placement.decoration)
-        .every(
-          (placement) =>
-            placement.type === 'text' && placement.text.includes('Body from source page'),
-        ),
-    ).toBe(true);
+      body.flatMap((placement) => (placement.type === 'text' ? [placement.text] : [])).join(' '),
+    ).toBe(
+      Array.from(
+        { length: 6 },
+        (_, index) => `Body from source page ${index + 1} remains in the reading order.`,
+      ).join(' '),
+    );
     expect(collectCriticalIssues(original, reading, {}, layout)).toEqual([]);
   });
 

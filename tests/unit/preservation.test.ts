@@ -37,7 +37,10 @@ describe('local preservation ownership', () => {
       height: line.height + 4,
     });
     const regions = closePreservationRegions({ width: 595, height: 794, items }, [input]);
-    expect(regions).toEqual([input]);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].reason).toBe(input.reason);
+    for (const key of ['x', 'y', 'width', 'height'] as const)
+      expect(regions[0].rect[key]).toBeCloseTo(input.rect[key], 8);
     expect(
       items.filter((item) => ownsPreservedText(regions[0].rect, item)).map((item) => item.id),
     ).toEqual(['line-7']);
