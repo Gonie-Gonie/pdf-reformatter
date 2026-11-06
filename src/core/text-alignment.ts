@@ -17,7 +17,7 @@ export function justifyLine(
   let offsets = [...text.matchAll(/[ \t]+/gu)]
     .filter((match) => match.index > 0 && match.index + match[0].length < text.length)
     .map((match) => match.index + match[0].length);
-  let maximum = size * 0.6;
+  let maximum = size * (offsets.length >= 3 ? 1.3 : 0.6);
   if (!offsets.length) {
     const clusters = [...segmenter.segment(text)];
     offsets = clusters.flatMap((cluster, index) =>

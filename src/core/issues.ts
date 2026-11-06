@@ -5,6 +5,7 @@ import type {
   ReadingDocument,
   SourceDocument,
 } from './model';
+import { flowingText } from './inline-content';
 
 /** Only content-loss risks belong in review; routine visual changes do not. */
 export function collectCriticalIssues(
@@ -42,7 +43,7 @@ export function collectCriticalIssues(
     for (const id of block.sourceIds)
       sourceOwners.set(id, [...(sourceOwners.get(id) ?? []), block.id]);
     const preserved = block.kind === 'sourceRegion' || overrides[block.id]?.kind === 'sourceRegion';
-    if (!preserved && /[\u0000\ufffd]/u.test(overrides[block.id]?.text ?? block.text)) {
+    if (!preserved && /[\u0000\ufffd]/u.test(overrides[block.id]?.text ?? flowingText(block))) {
       issues.push({
         id: `text:${block.id}`,
         code: 'unreadable-text',

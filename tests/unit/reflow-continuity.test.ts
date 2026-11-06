@@ -40,6 +40,37 @@ function source(pages: SourcePage[]): SourceDocument {
 const measure = (value: string, size: number) => (value.length * size) / 2;
 
 describe('reflow continuity', () => {
+  it('keeps a row together when a small overlapping math run precedes later prose', () => {
+    const result = analyzeDocument(
+      source([
+        page(1, [
+          text('first', 'Ordinary prose before the expression', 40, 100, 160),
+          text('symbol', '\u0000', 100, 100, 2),
+          text('last', 'with additional ordinary words.', 201, 100, 140),
+        ]),
+      ]),
+    );
+    const body = result.blocks.find((block) => block.sourceIds.includes('first'))!;
+    expect(body.kind).toBe('paragraph');
+    expect(body.sourceIds).toEqual(['first', 'symbol', 'last']);
+    expect(body.inlineMath?.some((atom) => atom.sourceIds.includes('symbol'))).toBe(true);
+  });
+
+  it('does not turn a decimal coefficient and inline formula into a section heading', () => {
+    const result = analyzeDocument(
+      source([
+        page(1, [
+          text('coefficient', '0.5', 40, 100, 18),
+          { ...text('formula', 'max', 60, 100, 16), fontName: 'math' },
+          text('continuation', 'computed from ordinary samples', 90, 100, 220),
+        ]),
+      ]),
+    );
+    const body = result.blocks.find((block) => block.sourceIds.includes('coefficient'))!;
+    expect(body.kind).toBe('paragraph');
+    expect(body.inlineMath?.length).toBeGreaterThan(0);
+  });
+
   it('keeps a raised radical with its prose rows and crops before the next row', () => {
     const first = {
       ...text(
@@ -67,11 +98,13 @@ describe('reflow continuity', () => {
     original.graphicRegions = [{ x: 249, y: 112.67, width: 9, height: 9 }];
     const result = analyzeDocument(source([original]));
     const group = result.blocks.find((block) => block.sourceIds.includes('radical'))!;
-    expect(group.kind).toBe('sourceRegion');
+    expect(group.kind).toBe('paragraph');
     expect(group.sourceIds).toContain('first');
     expect(group.sourceIds).toContain('second');
-    expect(group.rect.y + group.rect.height).toBeLessThan(last.y);
-    expect(group.rect.y + group.rect.height).toBeGreaterThanOrEqual(121.67);
+    const atom = group.inlineMath!.find((item) => item.sourceIds.includes('radical'))!;
+    expect(atom.rect.width).toBeLessThan(20);
+    expect(atom.rect.y + atom.rect.height).toBeLessThan(last.y + 1);
+    expect(atom.rect.y + atom.rect.height).toBeGreaterThanOrEqual(121.67);
     expect(result.blocks.flatMap((block) => block.sourceIds).sort()).toEqual([
       'first',
       'last',

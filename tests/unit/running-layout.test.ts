@@ -111,7 +111,7 @@ describe('running book content layout', () => {
     expect(captionText.every((item) => item.type === 'text')).toBe(true);
     expect(
       captionText
-        .map((item) => (item.type === 'text' ? item.text.replace(/\s/gu, '') : ''))
+        .map((item) => (item.type === 'text' ? item.text.replace(/[\s\u00ad]/gu, '') : ''))
         .join(''),
     ).toBe(caption.text.replace(/\s/gu, ''));
   });
@@ -170,7 +170,7 @@ describe('running book content layout', () => {
       layout.pages
         .flatMap((page) => page.placements)
         .filter((item) => !item.decoration && item.type === 'text')
-        .map((item) => (item.type === 'text' ? item.text.replace(/\s/gu, '') : ''))
+        .map((item) => (item.type === 'text' ? item.text.replace(/[\s\u00ad]/gu, '') : ''))
         .join(''),
     ).toBe(prose.text.replace(/\s/gu, ''));
   });

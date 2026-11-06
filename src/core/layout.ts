@@ -11,7 +11,10 @@ import type {
 } from './model';
 import { validateConfig } from './config';
 import { finiteRect } from './geometry';
-import { justifyLine, textAdvance } from './text-alignment';
+import { justifyLine, textAdvance, textSegments } from './text-alignment';
+import { inlineContent, inlineFragments } from './inline-content';
+import type { InlineAtom } from './inline-content';
+import { wrapParagraph } from './paragraph-wrap';
 
 export type MeasureText = (text: string, fontSize: number) => number;
 const closingPunctuation =
@@ -167,6 +170,12 @@ export function findLayoutAnchor(
   for (const item of placements) {
     const placement = item.placement;
     if (placement.type === 'region') {
+      if (
+        placement.textStart !== undefined &&
+        placement.textEnd !== undefined &&
+        (offset < placement.textStart || offset >= placement.textEnd)
+      )
+        continue;
       if (!span || !finiteRect(span.rect))
         return { page: item.page, rect: placementRect(placement) };
       const source = placement.sourceRect;
@@ -514,6 +523,7 @@ export function layoutDocument(
         blockId: block.id,
         sourcePage: block.sourcePage,
         sourceRect: block.rect,
+        ...(block.reason?.includes('수식') ? { math: true } : {}),
         x: left + (width - regionWidth) / 2,
         y,
         width: regionWidth,
@@ -531,43 +541,82 @@ export function layoutDocument(
     const size = fontSize(block.kind, config.fontSizePt);
     const leading = Math.max(config.lineHeightPt * (size / config.fontSizePt), size * 1.15);
     const indent = block.kind === 'list' ? Math.min(size, width * 0.08) : 0;
-    const lines = wrapText(block.text, width - indent, size, measure);
+    const content = inlineContent(block);
+    const atomSizes = new Map<
+      InlineAtom,
+      { width: number; height: number; ascent: number; descent: number }
+    >();
+    for (const atom of content.atoms.values()) {
+      const scale = Math.min(size / atom.math.fontSize, (width - indent) / atom.math.rect.width);
+      atomSizes.set(atom, {
+        width: atom.math.rect.width * scale,
+        height: atom.math.rect.height * scale,
+        ascent: Math.max(0, atom.math.baselineY - atom.math.rect.y) * scale,
+        descent:
+          Math.max(0, atom.math.rect.y + atom.math.rect.height - atom.math.baselineY) * scale,
+      });
+    }
+    const flowMeasure: MeasureText = content.atoms.size
+      ? (text, fontSize) =>
+          inlineFragments(text, content.atoms).reduce(
+            (sum, part) =>
+              sum + (part.atom ? atomSizes.get(part.atom)!.width : measure(part.text, fontSize)),
+            0,
+          )
+      : measure;
+    const wrap = block.kind === 'paragraph' ? wrapParagraph : wrapText;
+    const lines = wrap(content.text, width - indent, size, flowMeasure);
     if (!lines.length) continue;
+    const spare = numberedBlocks.has(block.id)
+      ? Math.min(7, Math.max(0, leading - size * 1.05))
+      : 0;
+    const numberBand = spare >= 5.5 ? spare : 0;
+    const metrics = lines.map((text) => {
+      const fragments = inlineFragments(text, content.atoms);
+      const math = fragments.flatMap((part) => (part.atom ? [atomSizes.get(part.atom)!] : []));
+      const ascent = numberBand + Math.max(size, ...math.map((atom) => atom.ascent));
+      const descent = Math.max(leading - size - numberBand, ...math.map((atom) => atom.descent));
+      return { fragments, ascent, height: ascent + descent };
+    });
     const paragraphEnds = new Set([lines.length - 1]);
-    if (/[\r\n]/u.test(block.text)) {
+    if (/[\r\n]/u.test(content.text)) {
       let count = 0;
-      for (const paragraph of block.text.replace(/\r\n?/gu, '\n').split('\n')) {
+      for (const paragraph of content.text.replace(/\r\n?/gu, '\n').split('\n')) {
         if (!paragraph.trim()) {
           if (count) count++;
           continue;
         }
-        count += wrapText(paragraph, width - indent, size, measure).length;
+        count += wrap(paragraph, width - indent, size, flowMeasure).length;
         paragraphEnds.add(count - 1);
       }
     }
-    if (leading > height + 0.001)
+    if (metrics.some((line) => line.height > height + 0.001))
       throw new RangeError('선택한 글자 크기와 행간을 배치할 페이지 높이가 부족합니다.');
     if (
       (block.keepTogether || block.semantic === 'note') &&
-      lines.length * leading <= height &&
-      y + lines.length * leading > bottom &&
+      metrics.reduce((sum, line) => sum + line.height, 0) <= height &&
+      y + metrics.reduce((sum, line) => sum + line.height, 0) > bottom &&
       page!.placements.length
     )
       newPage();
     if (
       block.kind === 'heading' &&
       page!.placements.length &&
-      y + leading * (lines.length + 1) > bottom
+      y + metrics.reduce((sum, line) => sum + line.height, 0) + leading > bottom
     )
       newPage();
     let offset = 0;
     let textOffset = 0;
-    const spare = numberedBlocks.has(block.id)
-      ? Math.min(7, Math.max(0, leading - size * 1.05))
-      : 0;
-    const numberBand = spare >= 5.5 ? spare : 0;
     while (offset < lines.length) {
-      let available = Math.floor((bottom - y + 0.001) / leading);
+      let available = 0;
+      let occupied = 0;
+      while (
+        offset + available < lines.length &&
+        occupied + metrics[offset + available].height <= bottom - y + 0.001
+      ) {
+        occupied += metrics[offset + available].height;
+        available++;
+      }
       if (available <= 0) {
         newPage();
         continue;
@@ -575,7 +624,12 @@ export function layoutDocument(
       let count = Math.min(lines.length - offset, available);
       const remaining = lines.length - offset;
       // Keep at least two paragraph lines together when the page can hold them.
-      if (remaining > count && count === 1 && page!.placements.length && height >= leading * 2) {
+      if (
+        remaining > count &&
+        count === 1 &&
+        page!.placements.length &&
+        height >= metrics[offset].height + metrics[offset + 1].height
+      ) {
         newPage();
         continue;
       }
@@ -583,13 +637,14 @@ export function layoutDocument(
       available = count;
       for (let index = 0; index < available; index++) {
         const text = lines[offset + index];
+        const row = metrics[offset + index];
         if (text) {
           const availableWidth = width - indent;
-          const naturalWidth = measure(text, size);
+          const naturalWidth = flowMeasure(text, size);
           const alignment = block.alignment ?? (block.kind === 'paragraph' ? 'justify' : 'left');
           const spacing =
             alignment === 'justify' && !paragraphEnds.has(offset + index)
-              ? justifyLine(text, availableWidth, size, measure)
+              ? justifyLine(text, availableWidth, size, flowMeasure)
               : [];
           const placedWidth = naturalWidth + spacing.reduce((sum, gap) => sum + gap.extra, 0);
           const shift =
@@ -598,24 +653,68 @@ export function layoutDocument(
               : alignment === 'center'
                 ? (availableWidth - naturalWidth) / 2
                 : 0;
-          page!.placements.push({
-            type: 'text',
-            blockId: block.id,
-            sourcePage: block.sourcePage,
-            text,
-            fontSize: size,
-            ...(spacing.length ? { spacing } : {}),
-            textStart: textOffset,
-            textEnd: textOffset + normalized(text).length,
-            x: left + indent + shift,
-            y: y + numberBand,
-            width: placedWidth,
-            height: leading - numberBand,
-          });
+          if (!row.fragments.some((part) => part.atom))
+            page!.placements.push({
+              type: 'text',
+              blockId: block.id,
+              sourcePage: block.sourcePage,
+              text,
+              fontSize: size,
+              ...(spacing.length ? { spacing } : {}),
+              textStart: textOffset,
+              textEnd: textOffset + normalized(text).length,
+              x: left + indent + shift,
+              y: y + row.ascent - size,
+              width: placedWidth,
+              height: row.height - row.ascent + size,
+            });
+          else {
+            let x = left + indent + shift;
+            for (const segment of textSegments(text, spacing)) {
+              for (const part of inlineFragments(segment.text, content.atoms)) {
+                if (part.atom) {
+                  const box = atomSizes.get(part.atom)!;
+                  page!.placements.push({
+                    type: 'region',
+                    blockId: block.id,
+                    sourcePage: block.sourcePage,
+                    sourceRect: part.atom.math.rect,
+                    math: true,
+                    textStart: part.atom.sourceStart,
+                    textEnd: part.atom.sourceEnd,
+                    x,
+                    y: y + row.ascent - box.ascent,
+                    width: box.width,
+                    height: box.height,
+                  });
+                  x += box.width;
+                } else {
+                  const partWidth = measure(part.text, size);
+                  if (part.text.trim())
+                    page!.placements.push({
+                      type: 'text',
+                      blockId: block.id,
+                      sourcePage: block.sourcePage,
+                      text: part.text,
+                      fontSize: size,
+                      textStart: textOffset,
+                      textEnd: textOffset + normalized(part.text).length,
+                      x,
+                      y: y + row.ascent - size,
+                      width: partWidth,
+                      height: row.height - row.ascent + size,
+                    });
+                  x += partWidth;
+                }
+                textOffset += normalized(part.text).length;
+              }
+              x += segment.extraAfter;
+            }
+          }
           addSource(block.sourcePage);
         }
-        textOffset += normalized(text).length;
-        y += leading;
+        if (!row.fragments.some((part) => part.atom)) textOffset += normalized(text).length;
+        y += row.height;
       }
       offset += available;
       if (offset < lines.length) newPage();

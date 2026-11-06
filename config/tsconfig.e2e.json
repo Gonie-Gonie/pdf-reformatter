@@ -5,5 +5,5 @@
     "types": ["node", "vite/client"],
     "tsBuildInfoFile": "../.cache/tsconfig/e2e.tsbuildinfo"
   },
-  "include": ["../tests/e2e", "../tests/unit", "playwright.ts"]
+  "include": ["../tests/e2e", "../tests/unit", "playwright.ts", "../src/hyphen.d.ts"]
 }

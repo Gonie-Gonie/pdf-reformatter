@@ -424,7 +424,9 @@ describe('measured reflow and pagination', () => {
         output.placements.map((placement) => (placement.type === 'text' ? placement.text : '')),
       )
       .join(' ');
-    expect(text.replace(/\s+/gu, '')).toBe(reading().blocks[0].text.replace(/\s+/gu, ''));
+    expect(text.replace(/[\s\u00ad]+/gu, '')).toBe(
+      reading().blocks[0].text.replace(/[\s\u00ad]+/gu, ''),
+    );
   });
   it.each([
     [360, 640, 11, 20],

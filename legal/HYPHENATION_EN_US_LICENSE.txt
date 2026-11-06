@@ -1,0 +1,13 @@
+Hyphenation patterns for American English
+
+Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken
+
+Copying and distribution of this file, with or without modification,
+are permitted in any medium without royalty provided the copyright
+notice and this notice are preserved.
+
+Source: hyph-en-us.tex (version 2005-05-30), hyph-utf8 / TeX hyphenation patterns
+https://github.com/hyphenation/tex-hyphen/blob/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-en-us.tex
+
+The English patterns distributed by hyphen are converted from these patterns.
+The JavaScript hyphenation library has its own ISC license, distributed separately.

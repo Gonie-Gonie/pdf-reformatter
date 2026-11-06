@@ -13,6 +13,8 @@ import { readTextAlignments } from './alignment';
 import { textSegments } from '../../core/text-alignment';
 import { validateConfig } from '../../core/config';
 import { colorTheme } from '../../core/color-themes';
+import { flowingText } from '../../core/inline-content';
+import { recolorMathPixels } from './math-raster';
 import { collectCriticalIssues } from '../../core/issues';
 import type {
   ConversionResult,
@@ -368,7 +370,7 @@ export async function exportPdf(
   const primarySet = new Set(primary.getCharacterSet());
   const allText = effective.blocks
     .filter((block) => block.kind !== 'sourceRegion')
-    .map((block) => block.text)
+    .map(flowingText)
     .join('');
   if ([...allText].some((char) => !primarySet.has(char.codePointAt(0)!) && !/\s/u.test(char))) {
     progress({ stage: 'laying-out', current: 0, total: 1, message: '글꼴 준비 중' });
@@ -385,7 +387,7 @@ export async function exportPdf(
   for (const block of effective.blocks) {
     if (
       block.kind !== 'sourceRegion' &&
-      [...block.text].some(
+      [...flowingText(block)].some(
         (char) =>
           !primarySet.has(char.codePointAt(0)!) &&
           !koreanSet.has(char.codePointAt(0)!) &&
@@ -403,7 +405,8 @@ export async function exportPdf(
   }
   const runs = (text: string) => {
     const result: { text: string; font: typeof primary }[] = [];
-    for (const char of text) {
+    // Fontkit hides a discretionary hyphen even when the line break was selected.
+    for (const char of text.replace(/\u00ad/gu, '-')) {
       const font = fontFor(char);
       const last = result.at(-1);
       if (last?.font === font) last.text += char;
@@ -434,6 +437,7 @@ export async function exportPdf(
     throw new Error('페이지 바깥으로 벗어난 내용이 있습니다. 페이지 크기와 여백을 확인해 주세요.');
   const issues = collectCriticalIssues(scopedSource, scopedReading, renderOverrides, layout);
   const input = await openPdf(bytes, password);
+  const mathPages = new Map<number, { canvas: OffscreenCanvas; scale: number }>();
   try {
     const footerFont = await output.embedFont(StandardFonts.Helvetica);
     const theme = colorTheme(config.theme);
@@ -483,7 +487,41 @@ export async function exportPdf(
             0.1,
             Math.min(3, 2600 / Math.max(placement.sourceRect.width, placement.sourceRect.height)),
           );
-          const canvas = await raster(original, scale, placement.sourceRect);
+          let canvas: OffscreenCanvas;
+          if (placement.math) {
+            let cached = mathPages.get(placement.sourcePage);
+            if (!cached) {
+              for (const entry of mathPages.values()) {
+                entry.canvas.width = 0;
+                entry.canvas.height = 0;
+              }
+              mathPages.clear();
+              const bounds = original.getViewport({ scale: 1 });
+              const detail = Math.min(6, 4600 / Math.max(bounds.width, bounds.height));
+              cached = { canvas: await raster(original, detail), scale: detail };
+              mathPages.set(placement.sourcePage, cached);
+            }
+            const rect = placement.sourceRect;
+            canvas = new OffscreenCanvas(
+              Math.max(1, Math.ceil(rect.width * cached.scale)),
+              Math.max(1, Math.ceil(rect.height * cached.scale)),
+            );
+            const context = canvas.getContext('2d', { willReadFrequently: true })!;
+            context.drawImage(
+              cached.canvas,
+              rect.x * cached.scale,
+              rect.y * cached.scale,
+              rect.width * cached.scale,
+              rect.height * cached.scale,
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+            if (recolorMathPixels(pixels.data, canvas.width, canvas.height, theme.foreground))
+              context.putImageData(pixels, 0, 0);
+          } else canvas = await raster(original, scale, placement.sourceRect);
           const png = new Uint8Array(
             await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
           );
@@ -496,7 +534,7 @@ export async function exportPdf(
           });
           canvas.width = 0;
           canvas.height = 0;
-          original.cleanup();
+          if (!placement.math) original.cleanup();
         }
       }
       page.drawText(`${index + 1}${scope === 'preview' ? '  PREVIEW' : ''}`, {
@@ -514,6 +552,10 @@ export async function exportPdf(
     const readingPdf = await output.save();
     return { readingPdf, layout, scope, selectedPages: range, source, reading, issues };
   } finally {
+    for (const entry of mathPages.values()) {
+      entry.canvas.width = 0;
+      entry.canvas.height = 0;
+    }
     await input.loadingTask.destroy();
   }
 }

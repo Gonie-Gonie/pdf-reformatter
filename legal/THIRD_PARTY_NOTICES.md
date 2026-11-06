@@ -2,16 +2,17 @@
 
 앱 코드의 라이선스 선택과 아래 구성 요소의 라이선스는 별개입니다. 설치 버전은 `package-lock.json`으로 고정합니다. 런타임 라이브러리의 라이선스 원문과 메타데이터는 빌드 시 `.cache/public/licenses/`에 복사되어 배포 결과의 `licenses/`에도 포함됩니다.
 
-| 구성 요소                 | 고정 버전                             | 라이선스                          | 출처                                                     |
-| ------------------------- | ------------------------------------- | --------------------------------- | -------------------------------------------------------- |
-| React / React DOM         | 19.3.1                                | MIT                               | https://github.com/facebook/react                        |
-| PDF.js / pdfjs-dist       | 6.4.299                               | Apache-2.0                        | https://github.com/mozilla/pdf.js                        |
-| pdf-lib                   | 1.17.1                                | MIT                               | https://github.com/Hopding/pdf-lib                       |
-| @pdf-lib/fontkit          | 1.1.1                                 | MIT                               | https://github.com/Hopding/fontkit                       |
-| Lucide React              | 1.63.0                                | ISC; 일부 Feather 유래 아이콘 MIT | https://github.com/lucide-icons/lucide                   |
-| Noto Serif Regular / Bold | 포함 파일 기준                        | SIL OFL 1.1                       | https://github.com/notofonts/noto-fonts                  |
-| Noto Sans Regular         | 포함 파일 기준                        | SIL OFL 1.1                       | https://github.com/notofonts/noto-fonts                  |
-| Noto Sans KR Regular      | 2.004-H2 / weight 400 static instance | SIL OFL 1.1                       | https://github.com/google/fonts/tree/main/ofl/notosanskr |
+| 구성 요소                 | 고정 버전                             | 라이선스                                                     | 출처                                                     |
+| ------------------------- | ------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------- |
+| React / React DOM         | 19.3.1                                | MIT                                                          | https://github.com/facebook/react                        |
+| PDF.js / pdfjs-dist       | 6.4.299                               | Apache-2.0                                                   | https://github.com/mozilla/pdf.js                        |
+| pdf-lib                   | 1.17.1                                | MIT                                                          | https://github.com/Hopding/pdf-lib                       |
+| @pdf-lib/fontkit          | 1.1.1                                 | MIT                                                          | https://github.com/Hopding/fontkit                       |
+| hyphen / English patterns | 1.14.1                                | ISC; [English pattern notice](HYPHENATION_EN_US_LICENSE.txt) | https://github.com/ytiurin/hyphen                        |
+| Lucide React              | 1.63.0                                | ISC; 일부 Feather 유래 아이콘 MIT                            | https://github.com/lucide-icons/lucide                   |
+| Noto Serif Regular / Bold | 포함 파일 기준                        | SIL OFL 1.1                                                  | https://github.com/notofonts/noto-fonts                  |
+| Noto Sans Regular         | 포함 파일 기준                        | SIL OFL 1.1                                                  | https://github.com/notofonts/noto-fonts                  |
+| Noto Sans KR Regular      | 2.004-H2 / weight 400 static instance | SIL OFL 1.1                                                  | https://github.com/google/fonts/tree/main/ofl/notosanskr |
 
 라틴 Noto 글꼴은 원본 파일을 포함합니다. 한국어 Noto Sans KR은 Google Fonts의 가변 TTF를 fontTools 4.55.0으로 weight 400의 정적 TTF로 만든 파생 파일입니다. fontkit subset 호환을 위해 `GSUB/GPOS/GDEF/BASE`·세로 조판 메트릭을 제거하고 `glyf` 패딩을 4로 맞췄습니다. 글리프 윤곽은 유지하지만 복잡한 문자 조형과 세로 조판은 지원하지 않습니다. 재현 스크립트는 `scripts/prepare-korean-font.py`이며 입력 원본의 SHA-256을 검사합니다. 원본의 Reserved Font Name은 `Source`이며 파생 파일은 이 이름을 사용하지 않습니다. 라틴 글꼴 라이선스는 `public/fonts/OFL-Noto.txt`, 한국어 글꼴 라이선스는 `public/fonts/OFL-NotoKR.txt`에 있습니다. 문서에 포함되는 글꼴 subset은 PDF 삽입을 위한 것이며 원본 글꼴을 별도 판매하지 않습니다. 배포 글꼴 바이트의 해시와 파생 정보는 `legal/fonts.json`에 기록합니다.
 

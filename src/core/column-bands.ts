@@ -29,6 +29,20 @@ function rowsFor(items: SourceText[]): Row[] {
       previous.items.push(item);
     else rows.push({ items: [item], center, size: item.fontSize });
   }
+  // Operators and numeric fragments occupy real space even though they cannot
+  // establish a prose row themselves. Ignoring them creates false gutters in
+  // sentences with inline mathematics and can split that physical row in two.
+  for (const item of items) {
+    if (item.artifact || item.preserve || /\p{L}/u.test(item.text) || !item.text.trim()) continue;
+    const center = item.y + item.height / 2;
+    const nearest = rows.reduce<Row | undefined>(
+      (best, row) =>
+        !best || Math.abs(row.center - center) < Math.abs(best.center - center) ? row : best,
+      undefined,
+    );
+    if (nearest && Math.abs(nearest.center - center) <= Math.max(nearest.size, item.fontSize) * 0.7)
+      nearest.items.push(item);
+  }
   return rows;
 }
 
@@ -66,11 +80,23 @@ function localTransitions(
 ): { top: number; gutter?: number }[] {
   const rows = rowsFor(items);
   const windowSize = 6;
+  const pageGutter = findColumnGutter(items, page.width);
   const groups: { gutter: number; start: number; end: number; count: number }[] = [];
   for (let start = 0; start + windowSize <= rows.length; start++) {
-    const selected = rows.slice(start, start + windowSize).flatMap((row) => row.items);
-    const gutter = findColumnGutter(selected, page.width);
+    const window = rows.slice(start, start + windowSize);
+    const selected = window.flatMap((row) => row.items);
+    let gutter = findColumnGutter(selected, page.width);
     if (gutter === undefined) continue;
+    // Indented headings can move a local estimate to the edge of the next
+    // column. Reuse the stronger page estimate only while it remains a real
+    // gap throughout this window; a summary or genuinely shifted column
+    // crosses that gap and keeps its own local boundary.
+    if (
+      pageGutter !== undefined &&
+      Math.abs(gutter - pageGutter) <= rows[start].size * 1.6 &&
+      window.every((row) => !crossesGutter(row, pageGutter))
+    )
+      gutter = pageGutter;
     const previous = groups.at(-1);
     if (previous && Math.abs(previous.gutter - gutter) <= rows[start].size * 1.5) {
       previous.count++;

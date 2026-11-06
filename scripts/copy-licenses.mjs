@@ -44,4 +44,8 @@ await cp(
   join(destination, 'THIRD_PARTY_NOTICES.md'),
 );
 await cp(join(root, 'legal', 'fonts.json'), join(destination, 'fonts.json'));
+await cp(
+  join(root, 'legal', 'HYPHENATION_EN_US_LICENSE.txt'),
+  join(destination, 'HYPHENATION_EN_US_LICENSE.txt'),
+);
 console.log(`Copied runtime licenses for ${index.length} installed packages`);

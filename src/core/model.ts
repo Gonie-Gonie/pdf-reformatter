@@ -75,6 +75,15 @@ export interface BlockAnchor {
   sourceId?: string;
   offset?: number;
 }
+export interface InlineMathSpan {
+  /** UTF-16 offsets in the containing block's unchanged text. */
+  start: number;
+  end: number;
+  sourceIds: string[];
+  rect: Rect;
+  baselineY: number;
+  fontSize: number;
+}
 export interface ReadingReference {
   id: string;
   source: BlockAnchor;
@@ -90,6 +99,7 @@ export interface ReadingBlock {
   text: string;
   fontSize: number;
   alignment?: TextAlignment;
+  inlineMath?: InlineMathSpan[];
   reason?: string;
   confidence: 'high' | 'review';
   semantic?: 'toc' | 'index' | 'note' | 'table';
@@ -145,6 +155,10 @@ export interface RegionPlacement extends Rect {
   blockId: string;
   sourcePage: number;
   sourceRect: Rect;
+  /** Source character range for a mathematical object inside a flowing paragraph. */
+  textStart?: number;
+  textEnd?: number;
+  math?: boolean;
   decoration?: Decoration;
 }
 export type Placement = TextPlacement | RegionPlacement;

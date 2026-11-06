@@ -25,12 +25,21 @@ import { PdfViewer } from '../components/PdfViewer';
 import { MontblancPresetIcon } from '../components/MontblancPresetIcon';
 import { Fold7PresetIcon } from '../components/Fold7PresetIcon';
 import { IPhoneDuoPresetIcon } from '../components/IPhoneDuoPresetIcon';
+import {
+  GalaxyTabPresetIcon,
+  IPadMiniPresetIcon,
+  IPadAirPresetIcon,
+} from '../components/TabletPresetIcons';
 
 type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme'>;
+type Preset = (typeof PRESETS)[number];
 const presetIcons = {
   fold: Fold7PresetIcon,
   'iphone-duo': IPhoneDuoPresetIcon,
   paper: MontblancPresetIcon,
+  'galaxy-tab': GalaxyTabPresetIcon,
+  'ipad-mini': IPadMiniPresetIcon,
+  'ipad-air': IPadAirPresetIcon,
 };
 type Tab = 'preview' | 'review';
 interface DocumentSession {
@@ -49,6 +58,10 @@ function previewPages(count: number): number[] {
 
 function App() {
   const [config, setConfig] = useState<LayoutConfig>({ ...DEFAULT_CONFIG });
+  const [presetSelection, setPresetSelection] = useState<{
+    name: Preset['name'];
+    rotated: boolean;
+  } | null>({ name: PRESETS[0].name, rotated: false });
   const [unit, setUnit] = useState<'mm' | 'pt'>('mm');
   const [session, setSession] = useState<DocumentSession | null>(null);
   const [result, setResult] = useState<ConversionResult | null>(null);
@@ -282,6 +295,16 @@ function App() {
   }
 
   function markChanged() {
+    window.clearTimeout(previewTimer.current);
+    if (sessionRef.current) {
+      // Invalidate immediately; only the next preview waits for the input debounce.
+      generation.current += 1;
+      cancelJob();
+      busyRef.current = false;
+      setBusy(false);
+      setProgress(null);
+    }
+    setError('');
     setStale(true);
     setPreviewRevision((previous) => previous + 1);
   }
@@ -293,11 +316,38 @@ function App() {
   }
 
   function changeNumber(key: NumericConfig, value: string, dimensions: boolean) {
+    if (key === 'pageWidthPt' || key === 'pageHeightPt') setPresetSelection(null);
     const number = value === '' ? Number.NaN : Number(value);
     changeConfig({
       ...config,
       [key]: dimensions && unit === 'mm' ? (number * 72) / 25.4 : number,
     });
+  }
+
+  function selectPreset(preset: Preset) {
+    setPresetSelection({ name: preset.name, rotated: false });
+    changeConfig({
+      ...configRef.current,
+      pageWidthPt: preset.width,
+      pageHeightPt: preset.height,
+    });
+  }
+
+  function swapDimensions() {
+    const current = configRef.current;
+    setPresetSelection((previous) =>
+      previous ? { ...previous, rotated: !previous.rotated } : null,
+    );
+    changeConfig({
+      ...current,
+      pageWidthPt: current.pageHeightPt,
+      pageHeightPt: current.pageWidthPt,
+    });
+  }
+
+  function resetConfig() {
+    setPresetSelection({ name: PRESETS[0].name, rotated: false });
+    changeConfig({ ...DEFAULT_CONFIG });
   }
 
   function preserveIssue(issue: CriticalIssue) {
@@ -389,7 +439,6 @@ function App() {
             min="0"
             step={step}
             aria-label={label}
-            disabled={busy}
             onChange={(event) => changeNumber(key, event.target.value, dimensions)}
           />
           <span>{dimensions ? unit : 'pt'}</span>
@@ -447,32 +496,35 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="field-pair">
+            <div className="field-pair page-size-fields">
               {numberField('pageWidthPt', '가로', true, 0.1)}
+              <button
+                className="icon-button swap-dimensions-button"
+                aria-label="가로·세로 바꾸기"
+                title="가로·세로 바꾸기"
+                onClick={swapDimensions}
+              >
+                <Icon name="swap" size={18} />
+              </button>
               {numberField('pageHeightPt', '세로', true, 0.1)}
             </div>
             <p className="preset-label">preset</p>
             <div className="preset-grid">
               {PRESETS.map((preset) => {
                 const PresetIcon = presetIcons[preset.shape];
-                const active =
-                  Math.abs(config.pageWidthPt - preset.width) < 0.05 &&
-                  Math.abs(config.pageHeightPt - preset.height) < 0.05;
+                const active = presetSelection?.name === preset.name;
                 return (
                   <button
                     key={preset.name}
                     className={`preset-card ${preset.shape} ${active ? 'active' : ''}`}
-                    disabled={busy}
                     aria-pressed={active}
-                    onClick={() =>
-                      changeConfig({
-                        ...config,
-                        pageWidthPt: preset.width,
-                        pageHeightPt: preset.height,
-                      })
-                    }
+                    onClick={() => selectPreset(preset)}
                   >
-                    <PresetIcon />
+                    <span
+                      className={`preset-icon-frame ${active && presetSelection.rotated ? 'rotated' : ''}`}
+                    >
+                      <PresetIcon />
+                    </span>
                     <strong>{preset.name}</strong>
                   </button>
                 );
@@ -488,7 +540,6 @@ function App() {
               {COLOR_THEMES.map((theme) => (
                 <button
                   key={theme.id}
-                  disabled={busy}
                   aria-label={theme.label}
                   title={theme.label}
                   aria-pressed={config.theme === theme.id}
@@ -509,7 +560,6 @@ function App() {
             </div>
             <div className="font-options" role="group" aria-label="글꼴">
               <button
-                disabled={busy}
                 aria-pressed={config.fontFamily === 'serif'}
                 className={`font-option serif ${config.fontFamily === 'serif' ? 'active' : ''}`}
                 onClick={() => changeConfig({ ...config, fontFamily: 'serif' })}
@@ -517,7 +567,6 @@ function App() {
                 명조
               </button>
               <button
-                disabled={busy}
                 aria-pressed={config.fontFamily === 'sans'}
                 className={`font-option sans ${config.fontFamily === 'sans' ? 'active' : ''}`}
                 onClick={() => changeConfig({ ...config, fontFamily: 'sans' })}
@@ -540,11 +589,7 @@ function App() {
               </div>
             </div>
           </section>
-          <button
-            className="text-button reset-button"
-            disabled={busy}
-            onClick={() => changeConfig({ ...DEFAULT_CONFIG })}
-          >
+          <button className="text-button reset-button" onClick={resetConfig}>
             <Icon name="refresh" size={14} />
             기본 설정으로
           </button>

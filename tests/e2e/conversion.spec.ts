@@ -181,7 +181,7 @@ test('local conversion preserves Korean, English and column order in the result 
     expect(outputPage.getWidth()).toBeCloseTo(385.39365, 4);
     expect(outputPage.getHeight()).toBeCloseTo(427.69295, 4);
   }
-  const text = await outputText(downloaded.bytes);
+  const text = (await outputText(downloaded.bytes)).replace(/([a-z])-\s+(?=[a-z])/gu, '$1');
   expect(text).toContain('한글 문단의 줄바꿈');
   expect(text).toContain('This document was written specifically for testing PDF reflow.');
   expect(text).toContain('Its words, chart and table are synthetic.');

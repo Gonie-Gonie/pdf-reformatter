@@ -4,6 +4,9 @@ import { COLOR_THEMES } from './color-themes';
 // Main screen: 203.1 mm diagonal, 1968 × 2184 pixels in portrait orientation.
 // https://www.samsung.com/sec/smartphones/galaxy-z-fold7/specs/
 const FOLD7_PT_PER_PIXEL = ((203.1 / 25.4) * 72) / Math.hypot(1968, 2184);
+// Full display rectangle: 278.1 mm diagonal, 1600 × 2560 pixels in portrait.
+// https://www.samsung.com/sg/tablets/galaxy-tab-s/galaxy-tab-s11-gray-256gb-sm-x736bzaexsp/
+const TAB_S11_PT_PER_PIXEL = ((278.1 / 25.4) * 72) / Math.hypot(1600, 2560);
 
 export const DEFAULT_CONFIG: LayoutConfig = {
   pageWidthPt: 1968 * FOLD7_PT_PER_PIXEL,
@@ -40,6 +43,28 @@ export const PRESETS = [
     // Approximate active screen size from 1860 × 2480 pixels at the specified 300 PPI.
     width: (1860 / 300) * 72,
     height: (2480 / 300) * 72,
+  },
+  {
+    name: '갤럭시 탭 S11',
+    shape: 'galaxy-tab',
+    width: 1600 * TAB_S11_PT_PER_PIXEL,
+    height: 2560 * TAB_S11_PT_PER_PIXEL,
+  },
+  {
+    name: 'iPad mini 8',
+    shape: 'ipad-mini',
+    // iPad mini (A20 Pro), full display rectangle in portrait, 326 PPI.
+    // https://www.apple.com/kr/ipad-mini/specs/
+    width: (1512 / 326) * 72,
+    height: (2316 / 326) * 72,
+  },
+  {
+    name: 'iPad Air 11',
+    shape: 'ipad-air',
+    // Full display rectangle in portrait, 264 PPI.
+    // https://www.apple.com/kr/ipad-air/specs/
+    width: (1640 / 264) * 72,
+    height: (2360 / 264) * 72,
   },
 ] as const;
 

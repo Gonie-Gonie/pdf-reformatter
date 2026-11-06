@@ -116,11 +116,11 @@ describe('column analysis integration', () => {
     expect(Math.max(...left.map((block) => blocks.indexOf(block)))).toBeLessThan(
       Math.min(...right.map((block) => blocks.indexOf(block))),
     );
-    expect(blocks.find((block) => block.sourceIds.includes('squared'))?.kind).toBe('sourceRegion');
+    const expression = blocks.find((block) => block.sourceIds.includes('squared'))!;
+    expect(expression.kind).toBe('paragraph');
+    expect(expression.inlineMath?.some((atom) => atom.sourceIds.includes('squared'))).toBe(true);
     expect(
-      blocks
-        .filter((block) => block.kind === 'sourceRegion')
-        .every((block) => block.rect.height < 40),
+      blocks.flatMap((block) => block.inlineMath ?? []).every((atom) => atom.rect.height < 40),
     ).toBe(true);
     expect(left[0].text).toMatch(/^Left paragraph row 0/);
     expect(right[0].text).toMatch(/^Right paragraph row 0/);

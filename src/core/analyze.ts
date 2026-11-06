@@ -8,6 +8,7 @@ import type {
   SourcePage,
   SourceSpan,
   SourceText,
+  InlineMathSpan,
 } from './model';
 import { clampRect, finiteRect, intersects, union } from './geometry';
 import { persistentColumnBands } from './column-bands';
@@ -30,6 +31,9 @@ import type { PageSemantics } from './semantics';
 import { detectRunningContent } from './running-content';
 import type { RunningContent } from './running-content';
 import { runningGraphicContent } from './running-graphics';
+import { inlineMathAtoms } from './inline-math';
+import type { InlineMathAtom } from './inline-math';
+import { paragraphContent } from './paragraph-content';
 
 interface Line {
   items: SourceText[];
@@ -77,7 +81,21 @@ function buildLines(
   items: SourceText[],
   gutter?: number,
   referenceIds = new Set<string>(),
+  atoms: readonly InlineMathAtom[] = [],
 ): Line[] {
+  const mathByItem = new Map(
+    atoms.flatMap((atom) => atom.sourceIds.map((id) => [id, atom] as const)),
+  );
+  const fullMathIds = new Set(
+    atoms.flatMap((atom) =>
+      atom.spans
+        .filter((span) => {
+          const item = items.find((entry) => entry.id === span.sourceId);
+          return item && span.start === 0 && span.end === item.text.length;
+        })
+        .map((span) => span.sourceId),
+    ),
+  );
   const rows: { anchor: SourceText; items: SourceText[] }[] = [];
   // A row's anchor stays fixed. Superscripts must not enlarge its box until it
   // touches the next baseline and joins an entire paragraph into a single row.
@@ -87,9 +105,11 @@ function buildLines(
     for (const candidate of rows) {
       const anchor = candidate.anchor;
       const centerDistance = Math.abs(anchor.y + anchor.height / 2 - item.y - item.height / 2);
-      const hasBaseline = anchor.baselineY !== undefined && item.baselineY !== undefined;
+      const anchorBaseline = mathByItem.get(anchor.id)?.baselineY ?? anchor.baselineY;
+      const itemBaseline = mathByItem.get(item.id)?.baselineY ?? item.baselineY;
+      const hasBaseline = anchorBaseline !== undefined && itemBaseline !== undefined;
       const baselineDistance = hasBaseline
-        ? Math.abs(anchor.baselineY! - item.baselineY!)
+        ? Math.abs(anchorBaseline! - itemBaseline!)
         : centerDistance;
       const overlap =
         Math.min(anchor.y + anchor.height, item.y + item.height) - Math.max(anchor.y, item.y);
@@ -135,7 +155,11 @@ function buildLines(
     const sorted = row.items.sort((a, b) => a.x - b.x);
     let segment: SourceText[] = [];
     for (const item of sorted) {
-      const previous = segment.at(-1);
+      const previous = segment.reduce<SourceText | undefined>(
+        (rightmost, entry) =>
+          !rightmost || entry.x + entry.width > rightmost.x + rightmost.width ? entry : rightmost,
+        undefined,
+      );
       if (
         previous &&
         ((gutter !== undefined &&
@@ -148,22 +172,31 @@ function buildLines(
             item.x - previous.x - previous.width >
               Math.max(36, Math.min(previous.fontSize, item.fontSize) * 3)))
       ) {
-        lines.push(makeLine(segment));
+        lines.push(makeLine(segment, fullMathIds, mathByItem));
         segment = [];
       }
       segment.push(item);
     }
-    if (segment.length) lines.push(makeLine(segment));
+    if (segment.length) lines.push(makeLine(segment, fullMathIds, mathByItem));
   }
   return lines.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
 }
 
-function makeLine(items: SourceText[]): Line {
+function makeLine(
+  items: SourceText[],
+  fullMathIds = new Set<string>(),
+  mathByItem = new Map<string, InlineMathAtom>(),
+): Line {
+  const rect = union(items);
+  const prose = items.filter((item) => !fullMathIds.has(item.id));
+  const flow = prose.length ? union(prose) : rect;
   return {
     items,
-    rect: union(items),
+    rect: { ...rect, y: flow.y, height: flow.height },
     text: itemText(items),
-    fontSize: median(items.map((item) => item.fontSize)),
+    fontSize: prose.length
+      ? median(prose.map((item) => item.fontSize))
+      : median(items.map((item) => mathByItem.get(item.id)?.fontSize ?? item.fontSize)),
   };
 }
 
@@ -235,7 +268,11 @@ function sourceBlock(
     rect,
     rawText: items.map((item) => item.text).join(''),
     text: joinLines(lines),
-    fontSize: median(items.map((item) => item.fontSize)),
+    fontSize: reason.includes('수식')
+      ? median(
+          page.items.filter((item) => item.text.trim().length > 8).map((item) => item.fontSize),
+        )
+      : median(items.map((item) => item.fontSize)),
     reason,
     confidence: 'review',
   };
@@ -252,7 +289,9 @@ function preservationRegions(
   page: SourcePage,
   lines: Line[],
   referenceIds = new Set<string>(),
+  atoms: readonly InlineMathAtom[] = [],
 ): PreservationRegion[] {
+  const inlineIds = new Set(atoms.flatMap((atom) => atom.sourceIds));
   const bands = columnBands(page, page.items);
   const sameColumn = (a: Rect, b: Rect): boolean => {
     const band = bands.find((entry) => a.y >= entry.top && a.y < entry.bottom);
@@ -282,6 +321,7 @@ function preservationRegions(
     lines.filter(
       (line) =>
         standaloneMath(line, referenceIds) &&
+        !line.items.some((item) => inlineIds.has(item.id)) &&
         !lines.some(
           (prose) =>
             prose !== line &&
@@ -300,13 +340,26 @@ function preservationRegions(
     ...sharedFigureRegions(page, lines),
     ...matrixRegions(page, lines),
     ...page.graphicRegions
-      .filter(finiteRect)
+      .filter(
+        (rect) =>
+          finiteRect(rect) &&
+          !atoms.some(
+            (atom) =>
+              rect.width <= atom.fontSize * 5 &&
+              rect.height <= atom.fontSize * 2 &&
+              intersects(rect, atom.rect),
+          ),
+      )
       .map((rect) => ({ rect: pad(rect), reason: '그림·표·벡터 도형을 원문 모양으로 보존' })),
   ];
   for (const item of page.items.filter((item) => item.preserve))
     regions.push({ rect: pad(item), reason: '회전된 글자와 해당 원문 영역만 보존' });
   for (const line of lines) {
-    if ((mathLine(line, referenceIds) || standaloneMath(line, referenceIds)) && !captionLine(line))
+    if (
+      (mathLine(line, referenceIds) || standaloneMath(line, referenceIds)) &&
+      !captionLine(line) &&
+      !line.items.some((item) => inlineIds.has(item.id))
+    )
       regions.push({
         rect: pad(line.rect),
         reason: '수식 또는 첨자가 포함된 줄을 원문 모양으로 보존',
@@ -372,6 +425,7 @@ function classify(line: Line, page: SourcePage, bodySize: number): BlockKind {
   if (
     (value.length < 120 &&
       /^\d{1,2}(?:\.\d{1,2}){1,5}\.?\s+\p{L}/u.test(value) &&
+      !mathLine(line) &&
       !/[.!?。！？]$/u.test(value)) ||
     line.fontSize > bodySize * 1.18 ||
     (value.length < 100 &&
@@ -582,7 +636,24 @@ function analyzePage(
   const lines = initialBands.flatMap((band) =>
     buildLines(band.items, band.gutter, semantic.referenceIds),
   );
-  const regions = preservationRegions(workingPage, lines, semantic.referenceIds);
+  const sourceSize = median(
+    workingPage.items.filter((item) => item.text.length > 8).map((item) => item.fontSize),
+  );
+  const fixedRegions = [
+    ...formulaRegions(workingPage).map((entry) => entry.rect),
+    ...matrixRegions(workingPage, lines).map((entry) => entry.rect),
+    ...sharedFigureRegions(workingPage, lines).map((entry) => entry.rect),
+    ...workingPage.graphicRegions.filter(
+      (rect) => rect.width > sourceSize * 5 || rect.height > sourceSize * 3,
+    ),
+  ];
+  const fixedIds = new Set(
+    workingPage.items
+      .filter((item) => fixedRegions.some((rect) => ownsPreservedText(rect, item)))
+      .map((item) => item.id),
+  );
+  const atoms = inlineMathAtoms(workingPage, lines, fixedIds, semantic.referenceIds);
+  const regions = preservationRegions(workingPage, lines, semantic.referenceIds, atoms);
   const claimed = new Set<string>();
   const units: Unit[] = [
     ...semantic.blocks.map((block) => ({ rect: block.rect, block })),
@@ -599,7 +670,7 @@ function analyzePage(
   // Labels inside a chart/table must not suggest columns for surrounding prose.
   const bands = columnBands(workingPage, remainingItems, initialBands);
   const remainingLines = bands.flatMap((band) =>
-    buildLines(band.items, band.gutter, semantic.referenceIds),
+    buildLines(band.items, band.gutter, semantic.referenceIds, atoms),
   );
   units.push(...remainingLines.map((line) => ({ rect: line.rect, line })));
   const ordered = bands.flatMap((band, index) =>
@@ -619,15 +690,56 @@ function analyzePage(
   function flush() {
     if (!paragraph.length) return;
     const items = paragraph.flatMap((line) => line.items);
+    const content = paragraphContent(paragraph);
+    const inlineMath: InlineMathSpan[] = [];
+    for (const atom of atoms) {
+      if (!atom.sourceIds.every((id) => content.ranges.has(id))) continue;
+      const ranges = atom.spans
+        .flatMap((span) => {
+          const range = content.ranges.get(span.sourceId);
+          if (!range) return [];
+          return [
+            {
+              start: Math.max(range.start, range.start + span.start - range.localStart),
+              end: Math.min(range.end, range.start + span.end - range.localStart),
+            },
+          ];
+        })
+        .sort((a, b) => a.start - b.start);
+      if (!ranges.length) continue;
+      const start = ranges[0].start,
+        end = Math.max(...ranges.map((entry) => entry.end));
+      let position = start;
+      let safe = true;
+      for (const range of ranges) {
+        if (content.text.slice(position, range.start).trim()) safe = false;
+        position = Math.max(position, range.end);
+      }
+      if (
+        !safe ||
+        end <= start ||
+        inlineMath.some((entry) => start < entry.end && end > entry.start)
+      )
+        continue;
+      inlineMath.push({
+        start,
+        end,
+        sourceIds: atom.sourceIds,
+        rect: atom.rect,
+        baselineY: atom.baselineY,
+        fontSize: atom.fontSize,
+      });
+    }
     blocks.push({
       id: `p${page.number}:${items[0].id}`,
       kind,
       sourcePage: page.number,
       sourceIds: items.map((item) => item.id),
-      sourceSpans: sourceSpans(items),
-      rect: union(paragraph.map((line) => line.rect)),
+      sourceSpans: content.sourceSpans,
+      rect: union(items),
       rawText: paragraph.map((line) => line.items.map((item) => item.text).join('')).join('\n'),
-      text: joinLines(paragraph),
+      text: content.text,
+      ...(inlineMath.length ? { inlineMath } : {}),
       fontSize: median(paragraph.map((line) => line.fontSize)),
       confidence: hasColumns ? 'review' : 'high',
     });
@@ -920,7 +1032,7 @@ export function applyOverrides(reading: ReadingDocument, overrides: Overrides): 
         block: {
           ...block,
           ...(override?.kind ? { kind: override.kind } : {}),
-          ...(override?.text !== undefined ? { text: override.text } : {}),
+          ...(override?.text !== undefined ? { text: override.text, inlineMath: undefined } : {}),
         },
         order: override?.order ?? index,
         index,

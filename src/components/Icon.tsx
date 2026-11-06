@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 export type IconName =
   | 'file'
   | 'arrow'
+  | 'swap'
   | 'upload'
   | 'download'
   | 'check'
@@ -30,6 +31,7 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M4 12h16m-6-6 6 6-6 6" />
     </>
   ),
+  swap: <path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4" />,
   upload: (
     <>
       <path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5" />
