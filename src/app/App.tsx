@@ -23,6 +23,7 @@ import type {
 import { Icon } from '../components/Icon';
 import { PdfViewer } from '../components/PdfViewer';
 import { MontblancPresetIcon } from '../components/MontblancPresetIcon';
+import { Fold7PresetIcon } from '../components/Fold7PresetIcon';
 
 type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme'>;
 type Tab = 'preview' | 'review';
@@ -464,11 +465,7 @@ function App() {
                       })
                     }
                   >
-                    {preset.shape === 'paper' ? (
-                      <MontblancPresetIcon />
-                    ) : (
-                      <span className={`preset-shape ${preset.shape}`} aria-hidden="true" />
-                    )}
+                    {preset.shape === 'paper' ? <MontblancPresetIcon /> : <Fold7PresetIcon />}
                     <strong>{preset.name}</strong>
                   </button>
                 );

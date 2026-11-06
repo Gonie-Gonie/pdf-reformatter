@@ -21,7 +21,7 @@ export const DEFAULT_CONFIG: LayoutConfig = {
 
 export const PRESETS = [
   {
-    name: 'Fold7',
+    name: '갤럭시 Z 폴드7',
     shape: 'fold',
     width: DEFAULT_CONFIG.pageWidthPt,
     height: DEFAULT_CONFIG.pageHeightPt,
