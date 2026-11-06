@@ -401,12 +401,14 @@ function App() {
     }
   }
 
-  function downloadResult() {
+  function downloadResult(format: 'pdf' | 'epub') {
     if (!result || result.scope !== 'full' || stale || busy || !session) return;
+    const bytes = format === 'pdf' ? result.readingPdf : result.readingEpub;
+    if (!bytes) return;
     downloadFile(
-      result.readingPdf,
-      `${safeName(session.source.name)}-formatted.pdf`,
-      'application/pdf',
+      bytes,
+      `${safeName(session.source.name)}-formatted.${format}`,
+      format === 'pdf' ? 'application/pdf' : 'application/epub+zip',
     );
   }
 
@@ -652,14 +654,28 @@ function App() {
                       <Icon name="refresh" size={15} />
                       변환
                     </button>
-                    <button
-                      className="small-button download-button"
-                      disabled={busy || stale || result?.scope !== 'full'}
-                      onClick={downloadResult}
-                    >
-                      <Icon name="download" size={16} />
-                      다운로드
-                    </button>
+                    <div className="download-actions" role="group" aria-label="다운로드">
+                      <button
+                        className="small-button download-button"
+                        aria-label="PDF 다운로드"
+                        title="PDF 다운로드"
+                        disabled={busy || stale || result?.scope !== 'full'}
+                        onClick={() => downloadResult('pdf')}
+                      >
+                        <Icon name="download" size={16} />
+                        PDF
+                      </button>
+                      <button
+                        className="small-button download-button"
+                        aria-label="EPUB 다운로드"
+                        title="EPUB 다운로드"
+                        disabled={busy || stale || result?.scope !== 'full' || !result.readingEpub}
+                        onClick={() => downloadResult('epub')}
+                      >
+                        <Icon name="book" size={16} />
+                        EPUB
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

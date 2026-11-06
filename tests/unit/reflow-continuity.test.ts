@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeDocument } from '../../src/core/analyze';
 import { DEFAULT_CONFIG } from '../../src/core/config';
+import { flowingText } from '../../src/core/inline-content';
 import { layoutDocument } from '../../src/core/layout';
 import type { SourceDocument, SourcePage, SourceText } from '../../src/core/model';
 
@@ -40,6 +41,69 @@ function source(pages: SourcePage[]): SourceDocument {
 const measure = (value: string, size: number) => (value.length * size) / 2;
 
 describe('reflow continuity', () => {
+  it('keeps scientific notation local while the surrounding paragraph reflows', () => {
+    const run = (
+      id: string,
+      value: string,
+      x: number,
+      width: number,
+      size = 10,
+      baseline = 110,
+    ): SourceText => ({
+      ...text(id, value, x, baseline - size * 1.2, width, size),
+      height: size * 1.6,
+      baselineY: baseline,
+      hasEOL: false,
+    });
+    const original = page(1, [
+      run('before', 'Ordinary prose reports the significance test (permutation', 50, 250),
+      { ...run('variable', 'p', 303, 5), fontName: 'italic' },
+      { ...run('comparison', '<', 311, 8), fontName: 'comparison' },
+      run('coefficient', '5', 322, 5),
+      { ...run('multiply', '\u22c5', 327, 3), fontName: 'symbol' },
+      run('ten', '10', 330, 10),
+      { ...run('minus', '\u0000', 340, 2, 7.5, 105.5), fontName: 'superscript' },
+      run('power', '5', 346, 4, 7.5, 105.5),
+      run('after', '), and additional observations remain ordinary prose.', 350, 200),
+    ]);
+    const reading = analyzeDocument(source([original]));
+    const body = reading.blocks.find((block) => block.sourceIds.includes('before'))!;
+    expect(body.kind).toBe('paragraph');
+    expect(body.sourceIds).toContain('after');
+    expect(reading.blocks.flatMap((block) => block.sourceIds).sort()).toEqual(
+      original.items.map((item) => item.id).sort(),
+    );
+    const expression = body.inlineMath!.find((atom) => atom.sourceIds.includes('minus'))!;
+    expect(expression.sourceIds).toEqual([
+      'variable',
+      'comparison',
+      'coefficient',
+      'multiply',
+      'ten',
+      'minus',
+      'power',
+      'after',
+    ]);
+    expect(body.text.slice(expression.start, expression.end)).toContain('5\u22c510');
+    expect(flowingText(body)).not.toMatch(/[\u0000\u22c5]/u);
+    expect(flowingText(body)).toContain('additional observations');
+
+    const layout = layoutDocument(reading, DEFAULT_CONFIG, measure);
+    const placements = layout.pages
+      .flatMap((entry) => entry.placements)
+      .filter((placement) => placement.blockId === body.id);
+    const prose = placements
+      .filter((placement) => placement.type === 'text')
+      .map((placement) => placement.text)
+      .join(' ');
+    expect(prose).toContain('Ordinary prose');
+    expect(prose).toContain('remain ordinary prose.');
+    const regions = placements.filter((placement) => placement.type === 'region');
+    expect(regions).toHaveLength(1);
+    expect(regions[0].sourceRect.width).toBeLessThan(60);
+    expect(regions[0].sourceRect.height).toBeLessThan(20);
+  });
+
   it('keeps a row together when a small overlapping math run precedes later prose', () => {
     const result = analyzeDocument(
       source([

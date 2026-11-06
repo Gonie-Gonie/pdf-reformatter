@@ -22,7 +22,7 @@ async function uploadPdf(page: Page, input: PdfInput = fixture) {
     timeout: 60_000,
   });
   await expect(page.getByRole('button', { name: '변환', exact: true })).toBeEnabled();
-  await expect(page.getByRole('button', { name: '다운로드', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'PDF 다운로드', exact: true })).toBeDisabled();
   await expect(page.locator('.error-message')).toHaveCount(0);
   await viewersReady(page);
 }
@@ -33,14 +33,14 @@ async function convert(page: Page) {
     timeout: 60_000,
   });
   await expect(page.locator(resultToolbar)).toHaveAttribute('data-stale', 'false');
-  await expect(page.getByRole('button', { name: '다운로드', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'PDF 다운로드', exact: true })).toBeEnabled();
   await expect(page.locator('.error-message')).toHaveCount(0);
   await viewersReady(page);
 }
 
 async function download(page: Page, info: TestInfo) {
   const waiting = page.waitForEvent('download');
-  await page.getByRole('button', { name: '다운로드', exact: true }).click();
+  await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
   const result = await waiting;
   const path = info.outputPath(result.suggestedFilename());
   await result.saveAs(path);
@@ -198,7 +198,7 @@ test('local conversion preserves Korean, English and column order in the result 
   expect(rightStart).toBeGreaterThan(leftTail);
 
   await page.getByLabel('글자 크기', { exact: true }).fill('14');
-  await expect(page.getByRole('button', { name: '다운로드', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'PDF 다운로드', exact: true })).toBeDisabled();
   await expect(page.locator(resultToolbar)).toHaveAttribute('data-stale', 'true');
   expect(external).toEqual([]);
   expect(badResponses).toEqual([]);
@@ -276,7 +276,7 @@ test('an invalid file and cancellation both permit a new full conversion', async
   await page.getByRole('button', { name: '변환', exact: true }).click();
   await page.getByRole('button', { name: '취소', exact: true }).click();
   await expect(page.getByRole('button', { name: '변환', exact: true })).toBeEnabled();
-  await expect(page.getByRole('button', { name: '다운로드', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'PDF 다운로드', exact: true })).toBeDisabled();
   await convert(page);
   const downloaded = await download(page, info);
   expect(await outputText(downloaded.bytes)).toContain('SourcePage036 ends here.');

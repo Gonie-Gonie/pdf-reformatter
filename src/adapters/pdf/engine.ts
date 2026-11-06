@@ -1,4 +1,4 @@
-import { getDocument, GlobalWorkerOptions, Util, version } from 'pdfjs-dist';
+import { getDocument, GlobalWorkerOptions, OPS, Util, version } from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -9,6 +9,7 @@ import { attachStructure, markedContentAt } from './structure';
 import { addNoteLinks } from './note-links';
 import { textGeometry } from './text-geometry';
 import { detectGraphicRegions } from './graphics';
+import { graphicObjectBounds, joinGraphicObjects } from './graphic-objects';
 import { readTextAlignments } from './alignment';
 import { textSegments } from '../../core/text-alignment';
 import { validateConfig } from '../../core/config';
@@ -16,6 +17,8 @@ import { colorTheme } from '../../core/color-themes';
 import { flowingText } from '../../core/inline-content';
 import { recolorMathPixels } from './math-raster';
 import { collectCriticalIssues } from '../../core/issues';
+import { buildEpub } from '../epub/package';
+import type { EpubAssets } from '../epub/package';
 import type {
   ConversionResult,
   LayoutConfig,
@@ -102,7 +105,14 @@ async function detectGraphics(page: PDFPageProxy, source: SourcePage): Promise<R
   const canvas = await raster(page, scale);
   try {
     const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
-    return detectGraphicRegions(pixels, canvas.width, canvas.height, scale, source);
+    const regions = detectGraphicRegions(pixels, canvas.width, canvas.height, scale, source);
+    const objects = graphicObjectBounds(
+      await page.getOperatorList(),
+      OPS,
+      page.getViewport({ scale: 1 }).transform,
+      source,
+    );
+    return joinGraphicObjects(regions, objects, source);
   } finally {
     canvas.width = 0;
     canvas.height = 0;
@@ -436,6 +446,8 @@ export async function exportPdf(
   if (!layout.pages.length || !inBounds)
     throw new Error('페이지 바깥으로 벗어난 내용이 있습니다. 페이지 크기와 여백을 확인해 주세요.');
   const issues = collectCriticalIssues(scopedSource, scopedReading, renderOverrides, layout);
+  const epubAssets: EpubAssets | undefined = scope === 'full' ? { images: new Map() } : undefined;
+  const blocks = new Map(effective.blocks.map((block) => [block.id, block]));
   const input = await openPdf(bytes, password);
   const mathPages = new Map<number, { canvas: OffscreenCanvas; scale: number }>();
   try {
@@ -525,6 +537,26 @@ export async function exportPdf(
           const png = new Uint8Array(
             await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
           );
+          if (epubAssets && !placement.decoration) {
+            const block = blocks.get(placement.blockId)!;
+            const inline =
+              block.kind !== 'sourceRegion' &&
+              block.inlineMath?.find(
+                ({ rect }) =>
+                  rect.x === placement.sourceRect.x &&
+                  rect.y === placement.sourceRect.y &&
+                  rect.width === placement.sourceRect.width &&
+                  rect.height === placement.sourceRect.height,
+              );
+            const key = inline ? `${block.id}:math:${inline.start}` : block.id;
+            epubAssets.images.set(key, {
+              path: `images/region-${epubAssets.images.size + 1}.png`,
+              bytes: png,
+              width: placement.sourceRect.width,
+              height: placement.sourceRect.height,
+              ...(inline ? { baseline: inline.baselineY - inline.rect.y } : {}),
+            });
+          }
           const image = await output.embedPng(png);
           page.drawImage(image, {
             x: placement.x,
@@ -550,7 +582,44 @@ export async function exportPdf(
     output.setCreator(`PDF Reflow ${__APP_VERSION__}`);
     output.setProducer('pdf-lib + PDF.js');
     const readingPdf = await output.save();
-    return { readingPdf, layout, scope, selectedPages: range, source, reading, issues };
+    let readingEpub: Uint8Array | undefined;
+    if (epubAssets) {
+      progress({ stage: 'exporting', current: 0, total: 1, message: 'EPUB 생성 중' });
+      epubAssets.fonts = [
+        { path: `fonts/${family}`, bytes: await fontBytes(family), family: 'primary' },
+        ...(korean
+          ? [
+              {
+                path: 'fonts/NotoSansKR-Regular.ttf',
+                bytes: await fontBytes('NotoSansKR-Regular.ttf'),
+                family: 'korean' as const,
+              },
+            ]
+          : []),
+      ];
+      epubAssets.licenses = [
+        { path: 'META-INF/licenses/OFL-Noto.txt', bytes: await fontBytes('OFL-Noto.txt') },
+        ...(korean
+          ? [
+              {
+                path: 'META-INF/licenses/OFL-NotoKR.txt',
+                bytes: await fontBytes('OFL-NotoKR.txt'),
+              },
+            ]
+          : []),
+      ];
+      readingEpub = buildEpub(scopedSource, effective, config, epubAssets);
+    }
+    return {
+      readingPdf,
+      readingEpub,
+      layout,
+      scope,
+      selectedPages: range,
+      source,
+      reading,
+      issues,
+    };
   } finally {
     for (const entry of mathPages.values()) {
       entry.canvas.width = 0;

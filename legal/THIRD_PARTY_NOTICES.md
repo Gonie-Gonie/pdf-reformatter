@@ -7,6 +7,7 @@
 | React / React DOM         | 19.3.1                                | MIT                                                          | https://github.com/facebook/react                        |
 | PDF.js / pdfjs-dist       | 6.4.299                               | Apache-2.0                                                   | https://github.com/mozilla/pdf.js                        |
 | pdf-lib                   | 1.17.1                                | MIT                                                          | https://github.com/Hopding/pdf-lib                       |
+| fflate                    | 0.8.3                                 | MIT                                                          | https://github.com/101arrowz/fflate                      |
 | @pdf-lib/fontkit          | 1.1.1                                 | MIT                                                          | https://github.com/Hopding/fontkit                       |
 | hyphen / English patterns | 1.14.1                                | ISC; [English pattern notice](HYPHENATION_EN_US_LICENSE.txt) | https://github.com/ytiurin/hyphen                        |
 | Lucide React              | 1.63.0                                | ISC; 일부 Feather 유래 아이콘 MIT                            | https://github.com/lucide-icons/lucide                   |

@@ -34,7 +34,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       self.postMessage(
         { id: r.id, type: 'result', value },
         {
-          transfer: [value.readingPdf.buffer as ArrayBuffer],
+          transfer: [
+            value.readingPdf.buffer as ArrayBuffer,
+            ...(value.readingEpub ? [value.readingEpub.buffer as ArrayBuffer] : []),
+          ],
         },
       );
     }

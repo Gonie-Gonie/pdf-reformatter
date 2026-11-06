@@ -34,13 +34,11 @@ interface Piece {
   row: Row;
 }
 
-const math =
-  /[\u0000\ufffd\u007e\p{Script=Greek}\u2070-\u209f\u20d0-\u20ff∑∏∫√∞≠≤≥≈∂∇⊂⊃∈∉∀∃±×÷⇌↔⇒⇔²³¹=+−]/u;
+const math = /[\u0000\ufffd\p{Sm}\p{Script=Greek}\u2070-\u209f\u20d0-\u20ff·⇌↔⇒⇔²³¹]/u;
 const mathFont = /math|symbol|cmsy|cmmi|cmex|msam|msbm/iu;
 const excludedRole =
   /^(?:H[1-6]|Figure|Caption|Table|TR|TD|TH|Note|FENote|Reference|TOC|TOCI|Index)$/u;
-const compact =
-  /^[\u0000\ufffd\u007e\p{L}\p{N}\p{Mark}_()[\]{},.:;|!%/∑∏∫√∞≠≤≥≈∂∇⊂⊃∈∉∀∃±×÷⇌↔⇒⇔=+−-]{1,20}$/u;
+const compact = /^[\u0000\ufffd\p{Sm}\p{L}\p{N}\p{Mark}_()[\]{},.:;!%/·⇌↔⇒⇔-]{1,20}$/u;
 
 function position(item: SourceText): number {
   return item.baselineY ?? item.y + item.fontSize * 0.8;
@@ -304,7 +302,7 @@ export function inlineMathAtoms(
       spacedVariable ||
       (item.width === 0 && /^\p{Mark}+$/u.test(value));
     const mathematicalToken =
-      /^[\p{N}\p{Mark}_()[\]{},.:;|!%/=+−-]+$/u.test(value) ||
+      /^[\p{Sm}\p{N}\p{Mark}_()[\]{},.:;!%/·-]+$/u.test(value) ||
       /^\p{L}$/u.test(value) ||
       /^[A-Z]{2,8}$/u.test(value) ||
       /^(?:min|max|sin|cos|tan|log|ln|exp|lim|argmin|argmax)$/u.test(value);

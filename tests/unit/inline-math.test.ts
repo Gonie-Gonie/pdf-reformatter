@@ -45,6 +45,50 @@ function row(items: SourceText[]) {
 }
 
 describe('inline mathematical objects', () => {
+  it.each([
+    ['<', '⋅'],
+    ['>', '·'],
+    ['≤', '×'],
+    ['≥', '⋅'],
+  ])('keeps scientific notation with %s and %s contiguous', (comparison, multiplication) => {
+    const prose = item('prose', 'The permutation test reports a probability of', 30, 160);
+    const variable = { ...item('p', 'p', 194, 5), fontName: 'italic' };
+    const relation = item('relation', comparison, 202, 6);
+    const coefficient = item('coefficient', '5', 211, 5);
+    const product = item('product', multiplication, 216, 3);
+    const base = item('base', '10', 219, 10);
+    const minus = item('minus', '\u0000', 229, 1.5, 7.5, 95.5);
+    const exponent = item('exponent', '5', 234, 3.5, 7.5, 95.5);
+    const tail = item('tail', '), and the ordinary paragraph continues.', 237.5, 190);
+    const page = source([
+      prose,
+      variable,
+      relation,
+      coefficient,
+      product,
+      base,
+      minus,
+      exponent,
+      tail,
+    ]);
+    const atoms = inlineMathAtoms(page, [row(page.items)]);
+
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].sourceIds).toEqual([
+      'p',
+      'relation',
+      'coefficient',
+      'product',
+      'base',
+      'minus',
+      'exponent',
+      'tail',
+    ]);
+    expect(atoms[0].spans.at(-1)).toEqual({ sourceId: 'tail', start: 0, end: 1 });
+    expect(atoms[0].rect.width).toBeLessThan(50);
+    expect(atoms[0].baselineY).toBe(100);
+  });
+
   it('keeps the ink of an unmapped operator wider than its reported advance', () => {
     const prose = item('prose', 'The difference is evaluated using', 30, 130);
     const left = { ...item('left', 'x', 170, 6), fontName: 'math' };

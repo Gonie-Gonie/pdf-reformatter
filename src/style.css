@@ -478,6 +478,12 @@ input:focus::-webkit-inner-spin-button {
   background: #f2eadc;
   border-color: #cfbaa0;
 }
+.download-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+}
 .progress-row {
   position: relative;
   display: flex;

@@ -187,6 +187,7 @@ export interface CriticalIssue {
 }
 export interface ConversionResult {
   readingPdf: Uint8Array;
+  readingEpub?: Uint8Array;
   layout: LayoutDocument;
   scope: 'full' | 'preview';
   selectedPages: number[];

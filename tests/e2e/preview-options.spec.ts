@@ -157,6 +157,6 @@ test('editing margins cancels active previews and keeps only the latest settings
   expect(await release(page, full.id)).toBe(true);
   await expect(toolbar).toHaveAttribute('data-scope', 'full', { timeout: 60_000 });
   await expect(toolbar).toHaveAttribute('data-stale', 'false');
-  await expect(page.getByRole('button', { name: '다운로드', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'PDF 다운로드', exact: true })).toBeEnabled();
   await expect(page.locator('.error-message')).toHaveCount(0);
 });
