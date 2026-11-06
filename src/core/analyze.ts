@@ -10,9 +10,16 @@ import type {
   SourceText,
 } from './model';
 import { clampRect, finiteRect, intersects, union } from './geometry';
-import { findColumnGutter } from './columns';
+import { persistentColumnBands } from './column-bands';
+import type { ColumnBand } from './column-bands';
+import { mastheadBoundary } from './mastheads';
 import { closePreservationRegions, ownsPreservedText, preservedRasterRect } from './preservation';
 import type { PreservationRegion } from './preservation';
+import { inferSourceAlignment } from './text-alignment';
+import { formulaRegions } from './formulas';
+import { sharedFigureRegions } from './figure-groups';
+import { matrixRegions } from './matrix-regions';
+import { protectInlineRows } from './inline-regions';
 import {
   analyzePageSemantics,
   noteMarkerIds,
@@ -22,6 +29,7 @@ import {
 import type { PageSemantics } from './semantics';
 import { detectRunningContent } from './running-content';
 import type { RunningContent } from './running-content';
+import { runningGraphicContent } from './running-graphics';
 
 interface Line {
   items: SourceText[];
@@ -54,7 +62,7 @@ function itemText(items: SourceText[]): string {
     const gap = previous ? item.x - previous.x - previous.width : 0;
     if (
       previous &&
-      gap > Math.min(item.fontSize, previous.fontSize) * 0.15 &&
+      (item.spaceBefore || gap > Math.min(item.fontSize, previous.fontSize) * 0.15) &&
       !/\s$/u.test(result) &&
       !/^\s/u.test(item.text)
     )
@@ -130,7 +138,11 @@ function buildLines(
       const previous = segment.at(-1);
       if (
         previous &&
-        ((gutter !== undefined && previous.x < gutter && item.x >= gutter) ||
+        ((gutter !== undefined &&
+          previous.x + previous.width <= gutter &&
+          item.x >= gutter &&
+          item.x - previous.x - previous.width >=
+            Math.max(4, Math.min(previous.fontSize, item.fontSize) * 0.8)) ||
           (!referenceIds.has(item.id) &&
             !referenceIds.has(previous.id) &&
             item.x - previous.x - previous.width >
@@ -260,9 +272,37 @@ function preservationRegions(
   const bodySize = median(
     page.items.filter((item) => item.text.trim().length > 8).map((item) => item.fontSize),
   );
-  const regions: { rect: Rect; reason: string; displayMath?: boolean }[] = page.graphicRegions
-    .filter(finiteRect)
-    .map((rect) => ({ rect: pad(rect), reason: '그림·표·벡터 도형을 원문 모양으로 보존' }));
+  const baseline = (line: Line) => {
+    const anchor = [...line.items].sort((a, b) => b.fontSize - a.fontSize)[0];
+    return anchor.baselineY ?? anchor.y + anchor.height / 2;
+  };
+  // A raised radical can have its own PDF baseline inside an ordinary prose
+  // row. It must not turn that row into a detached display equation.
+  const displayLines = new Set(
+    lines.filter(
+      (line) =>
+        standaloneMath(line, referenceIds) &&
+        !lines.some(
+          (prose) =>
+            prose !== line &&
+            !captionLine(prose) &&
+            (prose.text.match(/\p{L}{3,}/gu)?.length ?? 0) >= 3 &&
+            sameColumn(line.rect, prose.rect) &&
+            Math.abs(baseline(line) - baseline(prose)) <=
+              Math.max(line.fontSize, prose.fontSize) * 0.6 &&
+            line.rect.x >= prose.rect.x - prose.fontSize &&
+            line.rect.x + line.rect.width <= prose.rect.x + prose.rect.width + prose.fontSize,
+        ),
+    ),
+  );
+  const regions: PreservationRegion[] = [
+    ...formulaRegions(page),
+    ...sharedFigureRegions(page, lines),
+    ...matrixRegions(page, lines),
+    ...page.graphicRegions
+      .filter(finiteRect)
+      .map((rect) => ({ rect: pad(rect), reason: '그림·표·벡터 도형을 원문 모양으로 보존' })),
+  ];
   for (const item of page.items.filter((item) => item.preserve))
     regions.push({ rect: pad(item), reason: '회전된 글자와 해당 원문 영역만 보존' });
   for (const line of lines) {
@@ -270,7 +310,7 @@ function preservationRegions(
       regions.push({
         rect: pad(line.rect),
         reason: '수식 또는 첨자가 포함된 줄을 원문 모양으로 보존',
-        displayMath: standaloneMath(line, referenceIds),
+        displayMath: displayLines.has(line),
       });
   }
   // Gutter detection and large extraction gaps can split one display equation
@@ -284,7 +324,7 @@ function preservationRegions(
       if (!region.displayMath) continue;
       const neighbors = lines.filter(
         (line) =>
-          standaloneMath(line, referenceIds) &&
+          displayLines.has(line) &&
           sameColumn(region.rect, line.rect) &&
           nearbyEquation(region.rect, line.rect, bodySize),
       );
@@ -320,7 +360,7 @@ function preservationRegions(
       }
     }
   }
-  return closePreservationRegions(page, regions);
+  return closePreservationRegions(page, protectInlineRows(page, lines, regions));
 }
 
 function classify(line: Line, page: SourcePage, bodySize: number): BlockKind {
@@ -343,8 +383,8 @@ function classify(line: Line, page: SourcePage, bodySize: number): BlockKind {
   return 'paragraph';
 }
 
-/** Only explicit, isolated page-wide rules justify a change of column layout. */
-function columnBands(page: SourcePage, items: SourceText[]) {
+/** Isolated rules and persistent changes of whitespace separate column layouts. */
+function columnBands(page: SourcePage, items: SourceText[], initial?: ColumnBand[]) {
   const bodySize = median(page.items.map((item) => item.fontSize));
   const separators = page.graphicRegions
     .filter(
@@ -363,17 +403,11 @@ function columnBands(page: SourcePage, items: SourceText[]) {
     )
     .map((region) => region.y + region.height / 2)
     .sort((a, b) => a - b);
-  const cuts = [-Infinity, ...separators, Infinity];
-  return cuts.slice(0, -1).map((top, index) => {
-    const bottom = cuts[index + 1];
-    const selected = items.filter((item) => item.y >= top && item.y < bottom);
-    return {
-      top,
-      bottom,
-      items: selected,
-      gutter: findColumnGutter(selected, page.width, page.graphicRegions),
-    };
-  });
+  const masthead = mastheadBoundary(page);
+  const cuts = [...new Set([...separators, ...(masthead === undefined ? [] : [masthead])])].sort(
+    (a, b) => a - b,
+  );
+  return persistentColumnBands(page, items, cuts, initial);
 }
 
 function orderUnits(units: Unit[], gutter: number | undefined): Unit[] {
@@ -408,6 +442,23 @@ function orderUnits(units: Unit[], gutter: number | undefined): Unit[] {
 
 function canJoin(previous: Line, next: Line, kind: BlockKind, zoneWidth: number): boolean {
   if (kind === 'heading' || kind === 'caption') return false;
+  const previousAlignment = new Set(
+    previous.items.flatMap((item) => (item.alignment ? [item.alignment] : [])),
+  );
+  const nextAlignment = new Set(
+    next.items.flatMap((item) => (item.alignment ? [item.alignment] : [])),
+  );
+  const previousAlign = previousAlignment.size === 1 ? [...previousAlignment][0] : undefined;
+  const nextAlign = nextAlignment.size === 1 ? [...nextAlignment][0] : undefined;
+  if (
+    previousAlign !== nextAlign &&
+    ((previousAlign && nextAlign) ||
+      previousAlign === 'center' ||
+      previousAlign === 'right' ||
+      nextAlign === 'center' ||
+      nextAlign === 'right')
+  )
+    return false;
   const gap = next.rect.y - previous.rect.y - previous.rect.height;
   if (
     next.rect.y <= previous.rect.y ||
@@ -416,7 +467,13 @@ function canJoin(previous: Line, next: Line, kind: BlockKind, zoneWidth: number)
   )
     return false;
   if (Math.abs(previous.fontSize - next.fontSize) > previous.fontSize * 0.15) return false;
-  if (Math.abs(previous.rect.x - next.rect.x) > previous.fontSize * 1.6) return false;
+  const edge = (line: Line) =>
+    previousAlign === 'right'
+      ? line.rect.x + line.rect.width
+      : previousAlign === 'center'
+        ? line.rect.x + line.rect.width / 2
+        : line.rect.x;
+  if (Math.abs(edge(previous) - edge(next)) > previous.fontSize * 1.6) return false;
   if (previous.rect.width < zoneWidth * 0.65 && /[.!?。！？:]\s*$/u.test(previous.text))
     return false;
   if (/^(?:[•●▪◦‣*-]|\d+[.)])\s/u.test(next.text.trim())) return false;
@@ -427,7 +484,9 @@ function joinLines(lines: Line[]): string {
   return lines.reduce((value, line) => {
     const text = line.text.trim();
     if (!value) return text;
-    const noSpace = unspacedScripts.test(value.slice(-1)) && unspacedScripts.test(text.slice(0, 1));
+    const noSpace =
+      (unspacedScripts.test(value.slice(-1)) && unspacedScripts.test(text.slice(0, 1))) ||
+      (/[\p{L}\p{N}][\-\u2010\u00ad]$/u.test(value) && /^\p{Ll}/u.test(text));
     return value + (noSpace ? '' : ' ') + text;
   }, '');
 }
@@ -538,10 +597,7 @@ function analyzePage(
   ];
   const remainingItems = workingPage.items.filter((item) => !claimed.has(item.id));
   // Labels inside a chart/table must not suggest columns for surrounding prose.
-  const bands = columnBands(workingPage, remainingItems).map((band, index) => ({
-    ...band,
-    gutter: band.gutter ?? initialBands[index].gutter,
-  }));
+  const bands = columnBands(workingPage, remainingItems, initialBands);
   const remainingLines = bands.flatMap((band) =>
     buildLines(band.items, band.gutter, semantic.referenceIds),
   );
@@ -554,7 +610,7 @@ function analyzePage(
   );
   const hasColumns = ordered.some((unit) => unit.gutter !== undefined);
   const bodySize = median(
-    workingPage.items.filter((item) => item.text.trim().length > 8).map((item) => item.fontSize),
+    remainingItems.filter((item) => item.text.trim().length > 8).map((item) => item.fontSize),
   );
   const blocks: ReadingBlock[] = [];
   let paragraph: Line[] = [];
@@ -734,6 +790,17 @@ function withoutRunningContent(page: SourcePage, blocks: ReadingBlock[]): Source
   const bodyTop = items.length ? Math.min(...items.map((item) => item.y)) : page.height;
   const bodyBottom = items.length ? Math.max(...items.map((item) => item.y + item.height)) : 0;
   const graphicRegions = page.graphicRegions.filter((region) => {
+    if (
+      header.some(
+        (block) =>
+          block.kind === 'sourceRegion' &&
+          region.x >= block.rect.x - 0.5 &&
+          region.y >= block.rect.y - 0.5 &&
+          region.x + region.width <= block.rect.x + block.rect.width + 0.5 &&
+          region.y + region.height <= block.rect.y + block.rect.height + 0.5,
+      )
+    )
+      return false;
     if (region.width < page.width * 0.35 || region.height > 8) return true;
     if (
       header.length &&
@@ -755,7 +822,34 @@ function withoutRunningContent(page: SourcePage, blocks: ReadingBlock[]): Source
 
 export function analyzeDocument(source: SourceDocument): ReadingDocument {
   const running = detectRunningContent(source);
-  const decorations = source.pages.map((page) => runningBlocks(page, running.get(page.number)));
+  const graphics = runningGraphicContent(source);
+  const decorations = source.pages.map((page) => {
+    const content = running.get(page.number);
+    const graphic = graphics.get(page.number);
+    const combined: RunningContent = {
+      headerIds: [...new Set([...(content?.headerIds ?? []), ...(graphic?.headerIds ?? [])])],
+      footerIds: content?.footerIds ?? [],
+      pageNumberIds: [
+        ...new Set([...(content?.pageNumberIds ?? []), ...(graphic?.pageNumberIds ?? [])]),
+      ],
+    };
+    return [
+      ...runningBlocks(page, combined),
+      ...(graphic?.regions ?? []).map((rect, index): ReadingBlock => ({
+        id: `p${page.number}:running:graphic:${index}`,
+        kind: 'sourceRegion',
+        sourcePage: page.number,
+        sourceIds: [],
+        sourceSpans: [],
+        rect,
+        text: '',
+        rawText: '',
+        fontSize: 8,
+        confidence: 'high',
+        running: 'header',
+      })),
+    ];
+  });
   const inputs = source.pages.map((page, index) => withoutRunningContent(page, decorations[index]));
   const semantics = inputs.map(analyzePageSemantics);
   const labels = new Set(
@@ -781,10 +875,25 @@ export function analyzeDocument(source: SourceDocument): ReadingDocument {
         Math.abs(block.rect.width - page.width) < 0.1 &&
         Math.abs(block.rect.height - page.height) < 0.1,
     );
-    return fallback && decorations[index].length
-      ? pageFallback(page, fallback.reason ?? '원문 전체 보존')
-      : [...result.blocks, ...decorations[index]];
+    const blocks =
+      fallback && decorations[index].length
+        ? pageFallback(page, fallback.reason ?? '원문 전체 보존')
+        : [...result.blocks, ...decorations[index]];
+    const boundary = mastheadBoundary(page);
+    const first = blocks.find((block) => !block.running);
+    if (boundary !== undefined && first && first.rect.y < boundary) first.startOnNewPage = true;
+    return blocks;
   });
+  const originalItems = new Map(
+    source.pages.flatMap((page) => page.items.map((item) => [item.id, item] as const)),
+  );
+  for (const block of blocks) {
+    if (block.running || block.kind === 'sourceRegion' || block.kind === 'lineNumber') continue;
+    const alignment = inferSourceAlignment(
+      block.sourceIds.flatMap((id) => (originalItems.has(id) ? [originalItems.get(id)!] : [])),
+    );
+    if (alignment) block.alignment = alignment;
+  }
   return {
     schemaVersion: 1,
     sourceHash: source.hash,

@@ -9,7 +9,10 @@ import { attachStructure, markedContentAt } from './structure';
 import { addNoteLinks } from './note-links';
 import { textGeometry } from './text-geometry';
 import { detectGraphicRegions } from './graphics';
+import { readTextAlignments } from './alignment';
+import { textSegments } from '../../core/text-alignment';
 import { validateConfig } from '../../core/config';
+import { colorTheme } from '../../core/color-themes';
 import { collectCriticalIssues } from '../../core/issues';
 import type {
   ConversionResult,
@@ -121,6 +124,7 @@ export async function extractPdf(
     .map((x) => x.toString(16).padStart(2, '0'))
     .join('');
   const pdf = await openPdf(bytes, password);
+  const alignments = await readTextAlignments(bytes);
   const source: SourceDocument = {
     schemaVersion: 1,
     hash,
@@ -157,9 +161,15 @@ export async function extractPdf(
       const scale = Math.hypot(viewport.transform[0], viewport.transform[1]);
       let directionalCharacters = 0;
       let characterCount = 0;
+      let explicitSpace = false;
       for (let i = 0; i < content.items.length; i++) {
         const item = content.items[i];
-        if (!('str' in item) || !item.str.trim()) continue;
+        if (!('str' in item)) continue;
+        if (!item.str.trim()) {
+          if (/[ \t\u00a0]/u.test(item.str)) explicitSpace = true;
+          if (item.hasEOL) explicitSpace = false;
+          continue;
+        }
         const transform = Util.transform(viewport.transform, item.transform);
         const style = content.styles[item.fontName];
         const ascent = style?.ascent ?? 0.85,
@@ -172,6 +182,10 @@ export async function extractPdf(
           descent,
         );
         const directional = item.dir === 'ttb' || item.dir === 'rtl';
+        const metadata = marked.get(i);
+        const mcid = metadata?.markedContentId?.match(/_mc(\d+)$/u)?.[1];
+        const alignment =
+          mcid === undefined ? undefined : alignments.get(number)?.get(Number(mcid));
         characterCount += item.str.trim().length;
         if (directional) directionalCharacters += item.str.trim().length;
         sourcePage.items.push({
@@ -185,8 +199,11 @@ export async function extractPdf(
             : {}),
           fontName: `${style?.fontFamily ?? ''} ${item.fontName}`,
           hasEOL: item.hasEOL,
-          ...marked.get(i),
+          ...(explicitSpace ? { spaceBefore: true } : {}),
+          ...metadata,
+          ...(alignment ? { alignment } : {}),
         });
+        explicitSpace = false;
       }
       if (directionalCharacters > characterCount * 0.5)
         sourcePage.warnings.push(
@@ -419,8 +436,15 @@ export async function exportPdf(
   const input = await openPdf(bytes, password);
   try {
     const footerFont = await output.embedFont(StandardFonts.Helvetica);
-    const background = config.theme === 'warm' ? rgb(0.965, 0.941, 0.89) : rgb(1, 1, 1);
-    const color = config.theme === 'warm' ? rgb(0.255, 0.204, 0.169) : rgb(0.12, 0.13, 0.14);
+    const theme = colorTheme(config.theme);
+    const pdfColor = (hex: string) =>
+      rgb(
+        Number.parseInt(hex.slice(1, 3), 16) / 255,
+        Number.parseInt(hex.slice(3, 5), 16) / 255,
+        Number.parseInt(hex.slice(5, 7), 16) / 255,
+      );
+    const background = pdfColor(theme.background);
+    const color = pdfColor(theme.foreground);
     for (let index = 0; index < layout.pages.length; index++) {
       const pageLayout = layout.pages[index];
       progress({
@@ -440,15 +464,18 @@ export async function exportPdf(
       for (const placement of pageLayout.placements) {
         if (placement.type === 'text') {
           let x = placement.x;
-          for (const run of runs(placement.text)) {
-            page.drawText(run.text, {
-              x,
-              y: config.pageHeightPt - placement.y - placement.fontSize,
-              size: placement.fontSize,
-              font: run.font,
-              color: placement.decoration ? rgb(0.44, 0.42, 0.39) : color,
-            });
-            x += run.font.widthOfTextAtSize(run.text, placement.fontSize);
+          for (const segment of textSegments(placement.text, placement.spacing)) {
+            for (const run of runs(segment.text)) {
+              page.drawText(run.text, {
+                x,
+                y: config.pageHeightPt - placement.y - placement.fontSize,
+                size: placement.fontSize,
+                font: run.font,
+                color,
+              });
+              x += run.font.widthOfTextAtSize(run.text, placement.fontSize);
+            }
+            x += segment.extraAfter;
           }
         } else {
           const original = await input.getPage(placement.sourcePage);

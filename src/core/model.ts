@@ -1,9 +1,17 @@
+import type { ColorTheme } from './color-themes';
+
 /** All geometry is in PDF points, in the visible page's top-left coordinate system. */
 export interface Rect {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+export type TextAlignment = 'left' | 'right' | 'center' | 'justify';
+export interface TextSpacing {
+  /** UTF-16 offset after the complete grapheme or space receiving extra advance. */
+  after: number;
+  extra: number;
 }
 export interface SourceText extends Rect {
   id: string;
@@ -12,6 +20,8 @@ export interface SourceText extends Rect {
   fontName: string;
   hasEOL: boolean;
   baselineY?: number;
+  spaceBefore?: boolean;
+  alignment?: TextAlignment;
   markedContentId?: string;
   structureRoles?: string[];
   artifact?: boolean;
@@ -79,6 +89,7 @@ export interface ReadingBlock {
   rawText: string;
   text: string;
   fontSize: number;
+  alignment?: TextAlignment;
   reason?: string;
   confidence: 'high' | 'review';
   semantic?: 'toc' | 'index' | 'note' | 'table';
@@ -88,6 +99,7 @@ export interface ReadingBlock {
   keepTogether?: boolean;
   running?: 'header' | 'footer';
   runningPageNumber?: boolean;
+  startOnNewPage?: boolean;
 }
 export interface ReadingDocument {
   schemaVersion: 1;
@@ -114,7 +126,7 @@ export interface LayoutConfig {
   lineHeightPt: number;
   paragraphGapPt: number;
   fontFamily: 'serif' | 'sans';
-  theme: 'warm' | 'light';
+  theme: ColorTheme;
 }
 export type Decoration = 'lineNumber' | 'runningHeader' | 'runningFooter';
 export interface TextPlacement extends Rect {
@@ -123,6 +135,7 @@ export interface TextPlacement extends Rect {
   sourcePage: number;
   text: string;
   fontSize: number;
+  spacing?: TextSpacing[];
   textStart?: number;
   textEnd?: number;
   decoration?: Decoration;

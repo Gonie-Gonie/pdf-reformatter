@@ -1,4 +1,5 @@
 import type { LayoutConfig } from './model';
+import { COLOR_THEMES } from './color-themes';
 
 // Main screen: 203.1 mm diagonal, 1968 × 2184 pixels in portrait orientation.
 // https://www.samsung.com/sec/smartphones/galaxy-z-fold7/specs/
@@ -62,7 +63,7 @@ export function validateConfig(value: unknown): LayoutConfig {
   if (input.fontFamily !== 'serif' && input.fontFamily !== 'sans') {
     throw new RangeError('지원하지 않는 글꼴 설정입니다.');
   }
-  if (input.theme !== 'warm' && input.theme !== 'light') {
+  if (!COLOR_THEMES.some((theme) => theme.id === input.theme)) {
     throw new RangeError('지원하지 않는 색상 설정입니다.');
   }
   const config = { ...input } as unknown as LayoutConfig;

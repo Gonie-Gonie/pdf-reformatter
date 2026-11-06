@@ -17,8 +17,13 @@ export function textGeometry(
   const vertical = verticalScale
     ? [transform[2] / verticalScale, transform[3] / verticalScale]
     : [baseline[1], -baseline[0]];
-  const top = fontSize * ascent;
-  const bottom = fontSize * Math.min(descent, ascent - 1);
+  // Missing PDF font boxes can surface as NaN or a zero-height 0/0 pair.
+  // Normalize the pair before multiplication: even 0 * NaN corrupts x coordinates.
+  const validMetrics = Number.isFinite(ascent) && Number.isFinite(descent) && ascent > descent;
+  const fontAscent = validMetrics ? ascent : 0.85;
+  const fontDescent = validMetrics ? descent : -0.2;
+  const top = fontSize * fontAscent;
+  const bottom = fontSize * Math.min(fontDescent, fontAscent - 1);
   const corners = [0, advance].flatMap((distance) =>
     [top, bottom].map((height) => ({
       x: transform[4] + baseline[0] * distance + vertical[0] * height,

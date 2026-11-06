@@ -11,6 +11,7 @@ import type {
 } from './model';
 import { validateConfig } from './config';
 import { finiteRect } from './geometry';
+import { justifyLine, textAdvance } from './text-alignment';
 
 export type MeasureText = (text: string, fontSize: number) => number;
 const closingPunctuation =
@@ -187,7 +188,7 @@ export function findLayoutAnchor(
     if (placement.textStart === undefined || placement.textEnd === undefined) continue;
     if (offset < placement.textStart || offset >= placement.textEnd) continue;
     const located = characterAt(placement.text, offset - placement.textStart);
-    const x = placement.x + measure(located.prefix, placement.fontSize);
+    const x = placement.x + textAdvance(placement, located.prefix.length, measure);
     return {
       page: item.page,
       rect: {
@@ -334,6 +335,10 @@ function runningTitles(reading: ReadingDocument): Map<
     entries[block.running].push(block);
     bySource.set(block.sourcePage, entries);
   }
+  for (const entries of bySource.values()) {
+    entries.header.sort((a, b) => a.rect.x - b.rect.x);
+    entries.footer.sort((a, b) => a.rect.x - b.rect.x);
+  }
   return bySource;
 }
 
@@ -471,6 +476,8 @@ export function layoutDocument(
   newPage();
   for (const [blockIndex, block] of reading.blocks.entries()) {
     if (block.kind === 'lineNumber' || block.running) continue;
+    if (block.startOnNewPage && page!.placements.some((placement) => !placement.decoration))
+      newPage();
     if (block.kind === 'sourceRegion') {
       if (!finiteRect(block.rect))
         throw new RangeError(`${block.sourcePage}쪽 원문 영역의 크기가 잘못되었습니다.`);
@@ -526,6 +533,18 @@ export function layoutDocument(
     const indent = block.kind === 'list' ? Math.min(size, width * 0.08) : 0;
     const lines = wrapText(block.text, width - indent, size, measure);
     if (!lines.length) continue;
+    const paragraphEnds = new Set([lines.length - 1]);
+    if (/[\r\n]/u.test(block.text)) {
+      let count = 0;
+      for (const paragraph of block.text.replace(/\r\n?/gu, '\n').split('\n')) {
+        if (!paragraph.trim()) {
+          if (count) count++;
+          continue;
+        }
+        count += wrapText(paragraph, width - indent, size, measure).length;
+        paragraphEnds.add(count - 1);
+      }
+    }
     if (leading > height + 0.001)
       throw new RangeError('선택한 글자 크기와 행간을 배치할 페이지 높이가 부족합니다.');
     if (
@@ -565,17 +584,32 @@ export function layoutDocument(
       for (let index = 0; index < available; index++) {
         const text = lines[offset + index];
         if (text) {
+          const availableWidth = width - indent;
+          const naturalWidth = measure(text, size);
+          const alignment = block.alignment ?? (block.kind === 'paragraph' ? 'justify' : 'left');
+          const spacing =
+            alignment === 'justify' && !paragraphEnds.has(offset + index)
+              ? justifyLine(text, availableWidth, size, measure)
+              : [];
+          const placedWidth = naturalWidth + spacing.reduce((sum, gap) => sum + gap.extra, 0);
+          const shift =
+            alignment === 'right'
+              ? availableWidth - naturalWidth
+              : alignment === 'center'
+                ? (availableWidth - naturalWidth) / 2
+                : 0;
           page!.placements.push({
             type: 'text',
             blockId: block.id,
             sourcePage: block.sourcePage,
             text,
             fontSize: size,
+            ...(spacing.length ? { spacing } : {}),
             textStart: textOffset,
             textEnd: textOffset + normalized(text).length,
-            x: left + indent,
+            x: left + indent + shift,
             y: y + numberBand,
-            width: measure(text, size),
+            width: placedWidth,
             height: leading - numberBand,
           });
           addSource(block.sourcePage);

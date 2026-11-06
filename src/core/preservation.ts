@@ -1,10 +1,12 @@
 import { clampRect, finiteRect, intersects, union } from './geometry';
 import type { Rect, SourcePage, SourceText } from './model';
+import { adjacentFigureLabels } from './figure-labels';
 
 export interface PreservationRegion {
   rect: Rect;
   reason: string;
   displayMath?: boolean;
+  inlineRows?: boolean;
 }
 
 /** Font boxes can overlap adjacent baselines even when their visible glyphs do not. */
@@ -66,7 +68,10 @@ export function closePreservationRegions(
   for (const region of regions) {
     if (region.reason !== '그림·표·벡터 도형을 원문 모양으로 보존' || region.displayMath) continue;
     // Use the initial figure edge only, so labels cannot form an outward growth chain.
-    const labels = page.items.filter((item) => graphicEdgeLabel(region.rect, item));
+    const labels = [
+      ...page.items.filter((item) => graphicEdgeLabel(region.rect, item)),
+      ...adjacentFigureLabels(page.items, region.rect),
+    ];
     if (labels.length)
       region.rect = clampRect(union([region.rect, ...labels]), page.width, page.height);
   }
@@ -96,6 +101,7 @@ export function closePreservationRegions(
             ? '수식·도형과 인접 문자를 하나의 원문 영역으로 보존'
             : '그림·회전 문자와 인접 영역을 함께 보존';
         a.displayMath ||= b.displayMath;
+        a.inlineRows ||= b.inlineRows;
         regions.splice(other, 1);
         changed = true;
       }
@@ -104,30 +110,34 @@ export function closePreservationRegions(
   return regions;
 }
 
-/** Remove neighboring prose slivers from a single inline-math row's raster crop. */
+/** Remove neighboring prose slivers from bounded inline-math rows. */
 export function preservedRasterRect(
   page: Pick<SourcePage, 'items' | 'graphicRegions'>,
   region: PreservationRegion,
   owned: SourceText[],
 ): Rect {
   const original = region.rect;
+  const fontSize = Math.max(...owned.map((item) => item.fontSize));
+  const graphics = page.graphicRegions.filter((graphic) => intersects(original, graphic));
   if (
     region.displayMath ||
-    !/^수식 또는 첨자가 포함된 줄/u.test(region.reason) ||
+    (!region.inlineRows && !/^수식 또는 첨자가 포함된 줄/u.test(region.reason)) ||
     !owned.length ||
     owned.some((item) => item.preserve || Math.abs(item.rotation ?? 0) > 0.1) ||
-    page.graphicRegions.some((graphic) => intersects(original, graphic))
+    graphics.some(
+      (graphic) =>
+        !region.inlineRows || graphic.width > fontSize * 3 || graphic.height > fontSize * 2,
+    )
   )
     return original;
   const centers = owned.map((item) => item.y + item.height / 2);
   const first = Math.min(...centers),
     last = Math.max(...centers);
-  const fontSize = Math.max(...owned.map((item) => item.fontSize));
   if (
     !Number.isFinite(fontSize) ||
     fontSize <= 0 ||
-    last - first > fontSize * 0.65 ||
-    original.height > fontSize * 2.8
+    last - first > fontSize * (region.inlineRows ? 5.5 : 0.65) ||
+    original.height > fontSize * (region.inlineRows ? 6.5 : 2.8)
   )
     return original;
   const ids = new Set(owned.map((item) => item.id));
@@ -141,12 +151,30 @@ export function preservedRasterRect(
     .map((item) => item.y + item.height / 2)
     .filter((center) => center < first);
   const below = neighbors.map((item) => item.y + item.height / 2).filter((center) => center > last);
-  const top = above.length
+  let top = above.length
     ? Math.max(original.y, Math.ceil((Math.max(...above) + first) / 2))
     : original.y;
-  const bottom = below.length
+  let bottom = below.length
     ? Math.min(original.y + original.height, Math.floor((Math.min(...below) + last) / 2))
     : original.y + original.height;
+  // A rounded midpoint can still include the first fraction of a neighboring
+  // glyph. Use its exact edge when there is room outside every owned glyph box.
+  const ownedTop = Math.min(...owned.map((item) => item.y), ...graphics.map((rect) => rect.y));
+  const ownedBottom = Math.max(
+    ...owned.map((item) => item.y + item.height),
+    ...graphics.map((rect) => rect.y + rect.height),
+  );
+  if (region.inlineRows) {
+    top = Math.max(original.y, Math.min(top, ownedTop));
+    bottom = Math.min(original.y + original.height, Math.max(bottom, ownedBottom));
+  }
+  for (const neighbor of neighbors) {
+    const center = neighbor.y + neighbor.height / 2;
+    if (center > last && neighbor.y >= ownedBottom)
+      bottom = Math.min(bottom, Math.max(ownedBottom, neighbor.y - 0.25));
+    if (center < first && neighbor.y + neighbor.height <= ownedTop)
+      top = Math.max(top, Math.min(ownedTop, neighbor.y + neighbor.height + 0.25));
+  }
   if (top === original.y && bottom === original.y + original.height) return original;
   const maxTrim = Math.min(fontSize * 0.6, original.height * 0.3);
   const crop = { x: original.x, y: top, width: original.width, height: bottom - top };

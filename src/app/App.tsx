@@ -8,6 +8,7 @@ import {
 } from '../adapters/pdf/client';
 import { downloadFile } from '../adapters/platform/download';
 import { DEFAULT_CONFIG, PRESETS, validateConfig } from '../core/config';
+import { COLOR_THEMES } from '../core/color-themes';
 import { buildPageLinks } from '../core/navigation';
 import type { PageAnchor, PageLink, PageLinks } from '../core/navigation';
 import type {
@@ -21,6 +22,7 @@ import type {
 } from '../core/model';
 import { Icon } from '../components/Icon';
 import { PdfViewer } from '../components/PdfViewer';
+import { MontblancPresetIcon } from '../components/MontblancPresetIcon';
 
 type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme'>;
 type Tab = 'preview' | 'review';
@@ -451,7 +453,7 @@ function App() {
                 return (
                   <button
                     key={preset.name}
-                    className={`preset-card ${active ? 'active' : ''}`}
+                    className={`preset-card ${preset.shape} ${active ? 'active' : ''}`}
                     disabled={busy}
                     aria-pressed={active}
                     onClick={() =>
@@ -462,11 +464,12 @@ function App() {
                       })
                     }
                   >
-                    <span className={`preset-shape ${preset.shape}`} />
+                    {preset.shape === 'paper' ? (
+                      <MontblancPresetIcon />
+                    ) : (
+                      <span className={`preset-shape ${preset.shape}`} aria-hidden="true" />
+                    )}
                     <strong>{preset.name}</strong>
-                    <small>
-                      {displayDimension(preset.width)} × {displayDimension(preset.height)}
-                    </small>
                   </button>
                 );
               })}
@@ -475,27 +478,24 @@ function App() {
 
           <section className="settings-section">
             <div className="section-label">
-              <h2>종이</h2>
+              <h2>색상</h2>
             </div>
-            <div className="theme-options" role="group" aria-label="종이">
-              <button
-                disabled={busy}
-                aria-pressed={config.theme === 'warm'}
-                className={`theme-option warm ${config.theme === 'warm' ? 'active' : ''}`}
-                onClick={() => changeConfig({ ...config, theme: 'warm' })}
-              >
-                <span>Aa</span>따뜻한 종이
-                {config.theme === 'warm' && <Icon name="check" size={13} />}
-              </button>
-              <button
-                disabled={busy}
-                aria-pressed={config.theme === 'light'}
-                className={`theme-option light ${config.theme === 'light' ? 'active' : ''}`}
-                onClick={() => changeConfig({ ...config, theme: 'light' })}
-              >
-                <span>Aa</span>흰 종이
-                {config.theme === 'light' && <Icon name="check" size={13} />}
-              </button>
+            <div className="theme-options" role="group" aria-label="색상">
+              {COLOR_THEMES.map((theme) => (
+                <button
+                  key={theme.id}
+                  disabled={busy}
+                  aria-label={theme.label}
+                  title={theme.label}
+                  aria-pressed={config.theme === theme.id}
+                  className={`theme-option ${config.theme === theme.id ? 'active' : ''}`}
+                  style={{ backgroundColor: theme.background, color: theme.foreground }}
+                  onClick={() => changeConfig({ ...config, theme: theme.id })}
+                >
+                  <span aria-hidden="true">Aa</span>
+                  {config.theme === theme.id && <Icon name="check" size={10} />}
+                </button>
+              ))}
             </div>
           </section>
 

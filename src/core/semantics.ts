@@ -1,4 +1,5 @@
 import { clampRect, intersects, union } from './geometry';
+import { codeBlockEntries } from './code-blocks';
 import type {
   ReadingBlock,
   ReadingReference,
@@ -37,6 +38,13 @@ const pageNumber = /^(?:\d{1,5}|[ivxlcdm]{1,10})(?:\s*[,–—-]\s*(?:\d{1,5}|[i
 
 export function normalizedSourceText(text: string): string {
   return text.normalize('NFKC').replace(/[\s\u00ad]/gu, '');
+}
+function hasTocLeader(text: string): boolean {
+  const normalized = text.replace(/(?:\.\s*){2,}/gu, '...');
+  return /(?:\.{2,}|…|·{3,})\s*(?:\d+|[ivxlcdm]+)\s*$/iu.test(normalized);
+}
+function startsTocEntry(text: string): boolean {
+  return /^\s*(?:\d+(?:\.\d+)*|[ivxlcdm]+(?:\.\d+)*)(?:[.)]?\s+)\p{L}/iu.test(text);
 }
 export function sourceSpans(items: SourceText[]): SourceSpan[] {
   let offset = 0;
@@ -78,8 +86,9 @@ function rows(items: SourceText[]): Row[] {
       for (const item of ordered) {
         if (
           previous &&
-          item.x - previous.x - previous.width >
-            Math.min(item.fontSize, previous.fontSize) * 0.15 &&
+          (item.spaceBefore ||
+            item.x - previous.x - previous.width >
+              Math.min(item.fontSize, previous.fontSize) * 0.15) &&
           !/\s$/u.test(text) &&
           !/^\s/u.test(item.text)
         )
@@ -339,7 +348,7 @@ function tocParagraphEntries(entries: TaggedEntry[], pageWidth: number): TaggedE
   const hasPage = (items: SourceText[]) =>
     rows(items).some(
       (row) =>
-        /(?:\.{2,}|…|·{3,})\s*(?:\d+|[ivxlcdm]+)\s*$/iu.test(row.text) ||
+        hasTocLeader(row.text) ||
         row.items.some((item) => item.x > pageWidth * 0.6 && pageNumber.test(item.text.trim())),
     );
   for (const entry of entries) {
@@ -357,7 +366,7 @@ function tocParagraphEntries(entries: TaggedEntry[], pageWidth: number): TaggedE
     if (!target && previous && !hasPage(previous.items)) {
       const rect = union(previous.items);
       const gap = box.y - rect.y - rect.height;
-      const newLabel = /^\s*\d+(?:\.\d+)*[.)]?\s+\p{L}/u.test(rows(entry.items)[0].text);
+      const newLabel = startsTocEntry(rows(entry.items)[0].text);
       if (
         !newLabel &&
         gap >= -1 &&
@@ -647,6 +656,23 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
   }
   for (const entry of ruledTableEntries(page, claimed, bodySize))
     addTable(entry.items, entry.id, false);
+  for (const entry of codeBlockEntries(page, claimed)) {
+    blocks.push({
+      id: `p${page.number}:code:${entry.id}`,
+      kind: 'sourceRegion',
+      sourcePage: page.number,
+      sourceIds: entry.items.map((item) => item.id),
+      sourceSpans: sourceSpans(entry.items),
+      rect: entry.rect,
+      rawText: entry.rawText,
+      text: entry.rawText,
+      fontSize: median(entry.items.map((item) => item.fontSize)),
+      keepTogether: true,
+      reason: '코드의 줄바꿈과 들여쓰기를 원문 모양으로 보존',
+      confidence: 'high',
+    });
+    entry.items.forEach((item) => claimed.add(item.id));
+  }
   const headings = allRows.filter(
     (row) =>
       contentsHeading.test(row.text) || indexHeading.test(row.text) || notesHeading.test(row.text),
@@ -663,9 +689,24 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
   const referenceIds = new Set(
     structures.filter((group) => group.role === 'Reference').flatMap((group) => group.sourceIds),
   );
-  const tocRows = candidates.filter(
+  const tocCandidates = candidates.filter(
     (row) =>
-      /(?:\.{2,}|…|·{3,})\s*(?:\d+|[ivxlcdm]+)\s*$/iu.test(row.text) ||
+      tocHeading ||
+      !row.items.some((item) =>
+        page.graphicRegions.some(
+          (region) =>
+            region.height > row.size * 3 &&
+            region.width > row.size * 4 &&
+            item.x + item.width / 2 >= region.x &&
+            item.x + item.width / 2 <= region.x + region.width &&
+            item.y + item.height / 2 >= region.y &&
+            item.y + item.height / 2 <= region.y + region.height,
+        ),
+      ),
+  );
+  const tocRows = tocCandidates.filter(
+    (row) =>
+      hasTocLeader(row.text) ||
       (row.items.length >= 2 &&
         (tocHeading ||
           (!marginNumberIds.has(row.items.at(-1)!.id) &&
@@ -676,13 +717,26 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
         pageNumber.test(row.items.at(-1)!.text.trim()) &&
         row.items.at(-1)!.x > page.width * 0.65 &&
         row.items.at(-1)!.x - (row.items.at(-2)!.x + row.items.at(-2)!.width) > bodySize * 2 &&
-        row.items[0].text.trim().length >= 4),
+        /\p{L}{3}/u.test(
+          row.items
+            .slice(0, -1)
+            .map((item) => item.text)
+            .join(' '),
+        )),
   );
   const tocEndings = new Set(tocRows);
   if (tocHeading || tocRows.length >= 3)
     for (const row of tocRows.filter((entry) => entry.y > (tocHeading?.y ?? -Infinity)))
       add(
-        entryWithPrecedingLines(row, candidates, tocEndings, claimed, tocHeading?.y ?? -Infinity),
+        startsTocEntry(row.text)
+          ? row.items
+          : entryWithPrecedingLines(
+              row,
+              candidates,
+              tocEndings,
+              claimed,
+              tocHeading?.y ?? -Infinity,
+            ),
         'toc',
         true,
         row.items[0].id,

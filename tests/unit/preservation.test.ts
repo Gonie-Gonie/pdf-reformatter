@@ -176,6 +176,49 @@ describe('local preservation ownership', () => {
 });
 
 describe('inline preserved raster boundaries', () => {
+  it('keeps an inline radical drawing while excluding the following prose row', () => {
+    const first = text('first', 108, 100, 396, 10);
+    const second = text('second', 108, 112, 396, 10);
+    const after = text('after', 108, 128, 396, 10);
+    const radical = { x: 140, y: 118, width: 9, height: 9 };
+    const crop = preservedRasterRect(
+      { items: [first, second, after], graphicRegions: [radical] },
+      { ...seed({ x: 106, y: 98, width: 400, height: 31 }), inlineRows: true },
+      [first, second],
+    );
+    expect(crop.y + crop.height).toBeGreaterThanOrEqual(radical.y + radical.height);
+    expect(crop.y + crop.height).toBeLessThan(after.y);
+  });
+  it('trims the outer neighbors of a protected fraction and its adjacent rows', () => {
+    const above = text('above', 108, 500.319, 396, 9.963);
+    const previous = text('previous', 108, 511.228, 396, 9.963);
+    const prose = text('prose', 108, 522.137, 396, 9.963);
+    const fraction = { ...text('fraction', 130, 530.699, 4, 4.981), fontSize: 4.981 };
+    const next = text('next', 108, 535.307, 396, 9.963);
+    const below = text('below', 108, 546.216, 396, 9.963);
+    const owned = [previous, prose, fraction, next];
+    const crop = preservedRasterRect(
+      { items: [above, ...owned, below], graphicRegions: [] },
+      { ...seed({ x: 106, y: 509.228, width: 400, height: 38.042 }), inlineRows: true },
+      owned,
+    );
+    expect(crop.y).toBeGreaterThan(above.y + above.height);
+    expect(crop.y).toBeLessThanOrEqual(previous.y);
+    expect(crop.y + crop.height).toBeGreaterThanOrEqual(next.y + next.height);
+    expect(crop.y + crop.height).toBeLessThan(below.y);
+  });
+  it('excludes a fractional neighbor edge without clipping an owned subscript', () => {
+    const prose = text('prose', 108, 411.049, 396, 9.963);
+    const subscript = { ...text('subscript', 311, 414.458, 22, 6.974), fontSize: 6.974 };
+    const next = text('next', 108, 421.799, 15, 9.963);
+    const crop = preservedRasterRect(
+      { items: [prose, subscript, next], graphicRegions: [] },
+      seed({ x: 106, y: 408.89, width: 400, height: 14.542 }),
+      [prose, subscript],
+    );
+    expect(crop.y + crop.height).toBeLessThan(next.y);
+    expect(crop.y + crop.height).toBeGreaterThanOrEqual(subscript.y + subscript.height);
+  });
   const before = text('before', 37.588, 323.9307, 251.11, 13.037);
   const body = text('body', 37.588, 334.3619, 21.656, 13.037);
   const exponent = { ...text('exponent', 59.244, 333.2327, 3.3449, 9.7783), fontSize: 5.9779 };

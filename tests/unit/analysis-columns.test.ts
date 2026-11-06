@@ -43,6 +43,50 @@ function analyze(items: SourceText[], graphicRegions: SourcePage['graphicRegions
 }
 
 describe('column analysis integration', () => {
+  it.each(['center', 'right'] as const)(
+    'joins original %s-aligned paragraph lines by their aligned edge',
+    (alignment) => {
+      const blocks = analyze(
+        [200, 320, 440].map((width, index) => ({
+          ...text(
+            `aligned-${index}`,
+            `A paragraph line ${index} with words in its original alignment`,
+            alignment === 'center' ? 300 - width / 2 : 560 - width,
+            80 + index * 20,
+            width,
+          ),
+          alignment,
+        })),
+      );
+      const body = blocks.find((block) => block.sourceIds.includes('aligned-0'))!;
+      expect(body.sourceIds).toEqual(['aligned-0', 'aligned-1', 'aligned-2']);
+      expect(body.alignment).toBe(alignment);
+    },
+  );
+
+  it('keeps paragraphs with different explicit source alignments separate', () => {
+    const blocks = analyze([
+      {
+        ...text('left', 'A left aligned paragraph continues across its original line', 36, 60, 520),
+        alignment: 'left',
+      },
+      {
+        ...text(
+          'right',
+          'A right aligned paragraph continues across its original line',
+          36,
+          80,
+          520,
+        ),
+        alignment: 'right',
+      },
+    ]);
+    expect(blocks.find((block) => block.sourceIds.includes('left'))?.alignment).toBe('left');
+    expect(blocks.find((block) => block.sourceIds.includes('right'))?.alignment).toBe('right');
+    expect(blocks.find((block) => block.sourceIds.includes('left'))?.sourceIds).toEqual(['left']);
+    expect(blocks.find((block) => block.sourceIds.includes('right'))?.sourceIds).toEqual(['right']);
+  });
+
   it('keeps dense prose in baseline order and confines superscripts to their own row', () => {
     const items = Array.from({ length: 8 }, (_, row) => [
       text(
