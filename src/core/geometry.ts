@@ -47,6 +47,42 @@ export function finiteRect(rect: Rect): boolean {
   );
 }
 
+/** Exact covered area, without counting overlapping covers twice. */
+export function coveredArea(rect: Rect, covers: Rect[]): number {
+  const clipped = covers
+    .map((cover) => {
+      const x = Math.max(rect.x, cover.x),
+        y = Math.max(rect.y, cover.y);
+      return {
+        x,
+        y,
+        width: Math.min(rect.x + rect.width, cover.x + cover.width) - x,
+        height: Math.min(rect.y + rect.height, cover.y + cover.height) - y,
+      };
+    })
+    .filter(finiteRect);
+  const edges = [...new Set(clipped.flatMap((box) => [box.x, box.x + box.width]))].sort(
+    (a, b) => a - b,
+  );
+  let area = 0;
+  for (let index = 1; index < edges.length; index++) {
+    const left = edges[index - 1],
+      right = edges[index];
+    const intervals = clipped
+      .filter((box) => box.x <= left && box.x + box.width >= right)
+      .map((box) => [box.y, box.y + box.height])
+      .sort((a, b) => a[0] - b[0]);
+    let end = -Infinity,
+      height = 0;
+    for (const [top, bottom] of intervals) {
+      height += Math.max(0, bottom - Math.max(top, end));
+      end = Math.max(end, bottom);
+    }
+    area += (right - left) * height;
+  }
+  return area;
+}
+
 export function clampRect(rect: Rect, width: number, height: number): Rect {
   const x = Math.max(0, Math.min(width, rect.x));
   const y = Math.max(0, Math.min(height, rect.y));

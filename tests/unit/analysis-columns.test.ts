@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeDocument } from '../../src/core/analyze';
+import { persistentColumnBands } from '../../src/core/column-bands';
+import { findColumnGutter } from '../../src/core/columns';
 import type { SourceDocument, SourcePage, SourceText } from '../../src/core/model';
 
 function text(id: string, value: string, x: number, y: number, width: number): SourceText {
@@ -138,6 +140,200 @@ describe('column analysis integration', () => {
     expect(order.indexOf('metadata-3')).toBeLessThan(order.indexOf('summary-0'));
     expect(order.indexOf('summary-3')).toBeLessThan(order.indexOf('body-left-0'));
     expect(order.indexOf('body-left-3')).toBeLessThan(order.indexOf('body-right-0'));
+  });
+
+  it('keeps an outdented right-column continuation out of the left paragraph', () => {
+    const items = Array.from({ length: 8 }, (_, row) => [
+      text(
+        `left-${row}`,
+        `Left continuation ${row} remains in this paragraph.`,
+        54,
+        70 + row * 12,
+        235,
+      ),
+      text(
+        `right-${row}`,
+        `Right continuation ${row} belongs to another paragraph.`,
+        row === 5 ? 306 : 322,
+        71 + row * 12,
+        row === 5 ? 251 : 235,
+      ),
+    ]).flat();
+    const gutter = findColumnGutter(items, 600)!;
+    expect(gutter).toBeGreaterThan(289);
+    expect(gutter).toBeLessThan(306);
+    const blocks = analyze(items);
+    expect(
+      blocks.some(
+        (block) =>
+          block.sourceIds.some((id) => id.startsWith('left-')) &&
+          block.sourceIds.some((id) => id.startsWith('right-')),
+      ),
+    ).toBe(false);
+    const order = blocks.flatMap((block) => block.sourceIds);
+    expect(order.indexOf('left-7')).toBeLessThan(order.indexOf('right-0'));
+  });
+
+  it('retains a proven sidebar boundary when its smaller font drops below the new band’s body-size filter', () => {
+    const items = Array.from({ length: 6 }, (_, row) => [
+      {
+        ...text(`sidebar-${row}`, `Citation metadata line ${row}`, 36, 300 + row * 14, 114),
+        fontSize: 7,
+      },
+      {
+        ...text(
+          `main-${row}`,
+          `The main article paragraph continues through line ${row} with ordinary words.`,
+          166,
+          302 + row * 14,
+          394,
+        ),
+        fontSize: 10,
+      },
+    ]).flat();
+    const page: SourcePage = {
+      number: 1,
+      width: 600,
+      height: 800,
+      rotation: 0,
+      items,
+      graphicRegions: [],
+      warnings: [],
+    };
+    expect(findColumnGutter(items, page.width)).toBeUndefined();
+    const result = persistentColumnBands(
+      page,
+      items,
+      [],
+      [{ top: -Infinity, bottom: Infinity, items, gutter: 157 }],
+    );
+    expect(result[0].gutter).toBe(157);
+  });
+
+  it('keeps continuous columns in reading order while one column changes indentation', () => {
+    const items = Array.from({ length: 20 }, (_, row) => {
+      const right = row < 7 ? 322 : row < 14 ? 338 : 306;
+      return [
+        text(
+          `left-${row}`,
+          `Left paragraph continuation ${row} stays in order.`,
+          54,
+          70 + row * 12,
+          235,
+        ),
+        text(
+          `right-${row}`,
+          `Right paragraph continuation ${row} stays in order.`,
+          right,
+          71 + row * 12,
+          557 - right,
+        ),
+      ];
+    }).flat();
+    const blocks = analyze(items);
+    const order = blocks.flatMap((block) => block.sourceIds);
+    expect(order.indexOf('left-19')).toBeLessThan(order.indexOf('right-0'));
+    expect(
+      blocks.every(
+        (block) =>
+          !(
+            block.sourceIds.some((id) => id.startsWith('left-')) &&
+            block.sourceIds.some((id) => id.startsWith('right-'))
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it('drops an inherited boundary once ordinary prose crosses the original strip', () => {
+    const items = Array.from({ length: 4 }, (_, row) =>
+      text(
+        `wide-${row}`,
+        'A full-width paragraph crosses the previous sidebar boundary.',
+        36,
+        300 + row * 14,
+        520,
+      ),
+    );
+    const page: SourcePage = {
+      number: 1,
+      width: 600,
+      height: 800,
+      rotation: 0,
+      items,
+      graphicRegions: [],
+      warnings: [],
+    };
+    const result = persistentColumnBands(
+      page,
+      items,
+      [],
+      [{ top: -Infinity, bottom: Infinity, items, gutter: 157 }],
+    );
+    expect(result[0].gutter).toBeUndefined();
+  });
+
+  it('does not inherit a removed figure’s gutter from numeric labels alone', () => {
+    const items = Array.from({ length: 4 }, (_, row) => [
+      text(`tick-${row}`, `${row * 10}`, 60, 300 + row * 14, 20),
+      text(
+        `prose-${row}`,
+        'The surviving article text has no sidebar paragraph.',
+        166,
+        300 + row * 14,
+        394,
+      ),
+    ]).flat();
+    const page: SourcePage = {
+      number: 1,
+      width: 600,
+      height: 800,
+      rotation: 0,
+      items,
+      graphicRegions: [],
+      warnings: [],
+    };
+    const result = persistentColumnBands(
+      page,
+      items,
+      [],
+      [{ top: -Infinity, bottom: Infinity, items, gutter: 157 }],
+    );
+    expect(result[0].gutter).toBeUndefined();
+  });
+
+  it('keeps sidebar artwork and later metadata together without interrupting the main paragraph', () => {
+    const items = [
+      ...Array.from({ length: 3 }, (_, row) =>
+        text(
+          `wide-${row}`,
+          'A full-width article title and author row stays above the columns.',
+          36,
+          60 + row * 14,
+          520,
+        ),
+      ),
+      ...Array.from({ length: 12 }, (_, row) =>
+        text(
+          `main-${row}`,
+          `Main article paragraph line ${row} continues without sidebar interruptions.`,
+          202,
+          160 + row * 14,
+          354,
+        ),
+      ),
+      ...Array.from({ length: 4 }, (_, row) =>
+        text(`metadata-${row}`, `Citation metadata row ${row}`, 36, 260 + row * 14, 110),
+      ),
+    ];
+    const blocks = analyze(items, [{ x: 50, y: 235, width: 50, height: 20 }]);
+    const order = blocks.flatMap((block) => block.sourceIds);
+    expect(order.indexOf('wide-2')).toBeLessThan(order.indexOf('metadata-0'));
+    expect(order.indexOf('metadata-3')).toBeLessThan(order.indexOf('main-0'));
+    const picture = blocks.findIndex(
+      (block) => block.kind === 'sourceRegion' && block.rect.y > 200 && block.rect.y < 260,
+    );
+    expect(picture).toBeGreaterThanOrEqual(0);
+    expect(picture).toBeLessThan(blocks.findIndex((block) => block.sourceIds.includes('main-0')));
   });
 
   it('retains zero-advance equation marks in a finite source region', () => {

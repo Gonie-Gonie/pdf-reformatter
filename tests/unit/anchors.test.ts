@@ -18,7 +18,7 @@ const config: LayoutConfig = {
   marginLeftPt: 12,
   marginRightPt: 12,
   fontSizePt: 12,
-  lineHeightPt: 20,
+  lineHeightPercent: (20 / 12) * 100,
 };
 const measure = (text: string, size: number) => [...text].length * size * 0.5;
 const normalized = (text: string) => text.normalize('NFKC').replace(/[\s\u00ad]/gu, '');
@@ -74,6 +74,110 @@ function texts(layout: LayoutDocument): TextPlacement[] {
 }
 
 describe('anchored source content', () => {
+  it.each([90, 270] as const)(
+    'maps a source span inside a %i° clockwise object to its rotated output bounds',
+    (rotation) => {
+      const object: ReadingBlock = {
+        ...paragraph('rotated', ['object label']),
+        kind: 'sourceRegion',
+        rect: { x: 100, y: 50, width: 240, height: 120 },
+        sourceSpans: [
+          {
+            sourceId: 'rotated-s0',
+            start: 0,
+            end: 11,
+            rect: { x: 130, y: 70, width: 50, height: 20 },
+          },
+        ],
+      };
+      const reading = document([object]);
+      const layout: LayoutDocument = {
+        config,
+        warnings: [],
+        pages: [
+          {
+            number: 3,
+            sourcePages: [1],
+            placements: [
+              {
+                type: 'region',
+                blockId: object.id,
+                sourcePage: 1,
+                sourceRect: object.rect,
+                rotation,
+                x: 20,
+                y: 30,
+                width: 180,
+                height: 360,
+              },
+            ],
+          },
+        ],
+      };
+      const anchor = findLayoutAnchor(
+        layout,
+        reading,
+        { blockId: object.id, sourceId: 'rotated-s0' },
+        measure,
+      )!;
+      expect(anchor.page).toBe(3);
+      expect(anchor.rect.x).toBeCloseTo(rotation === 90 ? 140 : 50);
+      expect(anchor.rect.y).toBeCloseTo(rotation === 90 ? 75 : 270);
+      expect(anchor.rect.width).toBeCloseTo(30);
+      expect(anchor.rect.height).toBeCloseTo(75);
+      expect(object.sourceSpans?.[0].rect).toEqual({ x: 130, y: 70, width: 50, height: 20 });
+    },
+  );
+
+  it('clips a partially overlapping source span before rotating its anchor', () => {
+    const object: ReadingBlock = {
+      ...paragraph('clipped', ['object label']),
+      kind: 'sourceRegion',
+      rect: { x: 100, y: 50, width: 240, height: 120 },
+      sourceSpans: [
+        {
+          sourceId: 'clipped-s0',
+          start: 0,
+          end: 11,
+          rect: { x: 90, y: 40, width: 40, height: 30 },
+        },
+      ],
+    };
+    const layout: LayoutDocument = {
+      config,
+      warnings: [],
+      pages: [
+        {
+          number: 1,
+          sourcePages: [1],
+          placements: [
+            {
+              type: 'region',
+              blockId: object.id,
+              sourcePage: 1,
+              sourceRect: object.rect,
+              rotation: 90,
+              x: 20,
+              y: 30,
+              width: 180,
+              height: 360,
+            },
+          ],
+        },
+      ],
+    };
+    const anchor = findLayoutAnchor(
+      layout,
+      document([object]),
+      { blockId: object.id, sourceId: 'clipped-s0' },
+      measure,
+    )!;
+    expect(anchor.rect.x).toBeCloseTo(170);
+    expect(anchor.rect.y).toBeCloseTo(30);
+    expect(anchor.rect.width).toBeCloseTo(30);
+    expect(anchor.rect.height).toBeCloseTo(45);
+  });
+
   it('finds an original line start midway through a reflowed line', () => {
     const body = paragraph('body', ['alpha', 'beta', 'gamma']);
     const reading = document([body]);
@@ -158,7 +262,9 @@ describe('anchored source content', () => {
     expect(second.x).toBeCloseTo(anchor.rect.x);
     expect(second.y).toBeGreaterThanOrEqual(config.marginTopPt);
     expect(second.y + second.height).toBeLessThanOrEqual(line.y);
-    expect(line.y + line.height).toBe(config.marginTopPt + config.lineHeightPt);
+    expect(line.y + line.height).toBeCloseTo(
+      config.marginTopPt + (config.fontSizePt * config.lineHeightPercent) / 100,
+    );
   });
 
   it('packs colliding starts into the gutter without dropping or overlapping labels', () => {
@@ -189,7 +295,11 @@ describe('anchored source content', () => {
   it('uses the gutter when configured leading has no room for raised markers', () => {
     const body = paragraph('body', ['alpha', 'beta']);
     const reading = document([body, number('1', body, 0), number('2', body, 1)]);
-    const layout = layoutDocument(reading, { ...config, lineHeightPt: 13 }, measure);
+    const layout = layoutDocument(
+      reading,
+      { ...config, lineHeightPercent: (13 / 12) * 100 },
+      measure,
+    );
     const placements = texts(layout);
     const line = placements.find((item) => !item.decoration)!;
     const labels = placements.filter((item) => item.decoration);

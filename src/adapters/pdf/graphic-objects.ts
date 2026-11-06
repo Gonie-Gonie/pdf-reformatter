@@ -1,5 +1,6 @@
 import { clampRect, finiteRect, intersects, union } from '../../core/geometry';
 import type { Rect, SourcePage } from '../../core/model';
+import { captionBounds, separatelyCaptioned } from './graphics';
 
 interface GraphicOperators {
   save: number;
@@ -19,7 +20,7 @@ function numbers(value: unknown, length: number): number[] | undefined {
   return result.length === length && result.every(Number.isFinite) ? result : undefined;
 }
 
-function multiply(a: readonly number[], b: readonly number[]): number[] {
+export function multiply(a: readonly number[], b: readonly number[]): number[] {
   return [
     a[0] * b[0] + a[2] * b[1],
     a[1] * b[0] + a[3] * b[1],
@@ -30,7 +31,7 @@ function multiply(a: readonly number[], b: readonly number[]): number[] {
   ];
 }
 
-function transformedBox(box: readonly number[], matrix: readonly number[]): Rect {
+export function transformedBox(box: readonly number[], matrix: readonly number[]): Rect {
   const corners = [
     [box[0], box[1]],
     [box[2], box[1]],
@@ -45,7 +46,7 @@ function transformedBox(box: readonly number[], matrix: readonly number[]): Rect
   return union(corners);
 }
 
-function intersection(a: Rect, b: Rect): Rect {
+export function intersection(a: Rect, b: Rect): Rect {
   const x = Math.max(a.x, b.x),
     y = Math.max(a.y, b.y);
   return {
@@ -117,6 +118,7 @@ export function graphicObjectBounds(
 /** Object evidence may join a chart and legend, but never an encompassing prose/page wrapper. */
 export function joinGraphicObjects(regions: Rect[], objects: Rect[], source: SourcePage): Rect[] {
   const result = regions.map((rect) => ({ ...rect }));
+  const captions = captionBounds(source);
   for (const object of [...objects].sort((a, b) => a.width * a.height - b.width * b.height)) {
     if (
       !finiteRect(object) ||
@@ -134,6 +136,12 @@ export function joinGraphicObjects(regions: Rect[], objects: Rect[], source: Sou
         rect.y + rect.height <= object.y + object.height + 3,
     );
     if (contained.length < 2) continue;
+    if (
+      contained.some((one, index) =>
+        contained.slice(index + 1).some((other) => separatelyCaptioned(one, other, captions)),
+      )
+    )
+      continue;
     // Partial overlaps can belong to a neighboring illustration or a clipped wrapper.
     if (result.some((rect) => !contained.includes(rect) && intersects(rect, object))) continue;
     const items = source.items.filter((item) => {

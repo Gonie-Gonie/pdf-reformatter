@@ -13,7 +13,7 @@ const config = {
   marginTopPt: 10,
   marginBottomPt: 10,
   fontSizePt: 10,
-  lineHeightPt: 15,
+  lineHeightPercent: 150,
 };
 const text = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu';
 function document(value = text, alignment?: ReadingBlock['alignment']): ReadingDocument {

@@ -11,6 +11,7 @@ interface StructuralLine {
 
 interface Delimiter {
   item: SourceText;
+  rect: Rect;
   family: number;
   side: 'left' | 'right';
   part: 'top' | 'middle' | 'bottom' | 'whole';
@@ -33,7 +34,11 @@ const extensions = [
   ['\uf8f1', '\uf8f2\uf8f4', '\uf8f3', '\uf8fc', '\uf8fd\uf8f4', '\uf8fe'],
 ];
 
-function delimiter(item: SourceText, bodySize: number): Delimiter | undefined {
+function delimiter(
+  item: SourceText,
+  bodySize: number,
+  graphics: readonly Rect[],
+): Delimiter | undefined {
   const value = item.text.trim();
   if ([...value].length !== 1) return undefined;
   for (let family = 0; family < extensions.length; family++) {
@@ -41,21 +46,37 @@ function delimiter(item: SourceText, bodySize: number): Delimiter | undefined {
     if (index >= 0)
       return {
         item,
+        rect: item,
         family: family % 3,
         side: index < 3 ? 'left' : 'right',
         part: (['top', 'middle', 'bottom'] as const)[index % 3],
       };
   }
-  if (item.height < bodySize * 1.8) return undefined;
   const whole = ['(', ')', '[', ']', '{', '}'].indexOf(value);
-  return whole < 0
-    ? undefined
-    : {
-        item,
-        family: Math.floor(whole / 2),
-        side: whole % 2 ? 'right' : 'left',
-        part: 'whole',
-      };
+  if (whole < 0) return undefined;
+  // Some symbol fonts report only the upper part of a tall delimiter. Its
+  // remaining visible ink survives text masking as a narrow adjacent drawing.
+  const inkExtensions = graphics.filter((graphic) => {
+    const overlap =
+      Math.min(item.x + item.width, graphic.x + graphic.width) - Math.max(item.x, graphic.x);
+    return (
+      finiteRect(graphic) &&
+      graphic.width <= bodySize * 1.25 &&
+      graphic.height <= bodySize * 6 &&
+      overlap >= Math.min(item.width, graphic.width) * 0.5 &&
+      graphic.y >= item.y - bodySize * 0.25 &&
+      graphic.y <= item.y + item.height + bodySize * 0.4
+    );
+  });
+  const rect = union([item, ...inkExtensions]);
+  if (rect.height < bodySize * 1.8) return undefined;
+  return {
+    item,
+    rect,
+    family: Math.floor(whole / 2),
+    side: whole % 2 ? 'right' : 'left',
+    part: 'whole',
+  };
 }
 
 function stacks(
@@ -63,7 +84,7 @@ function stacks(
 ): { delimiter: Delimiter; items: SourceText[]; rect: Rect }[] {
   return delimiters.flatMap((seed) => {
     if (seed.part !== 'top' && seed.part !== 'whole') return [];
-    if (seed.part === 'whole') return [{ delimiter: seed, items: [seed.item], rect: seed.item }];
+    if (seed.part === 'whole') return [{ delimiter: seed, items: [seed.item], rect: seed.rect }];
     const column = delimiters
       .filter(
         (entry) =>
@@ -99,12 +120,50 @@ function shortMath(item: SourceText): boolean {
   if (
     !value ||
     value.length > 30 ||
-    /\p{L}{3,}/u.test(value.replace(/\b(?:sin|cos|tan|log|exp|lim)\b/gu, ''))
+    /\p{L}{3,}/u.test(value.replace(/\b(?:sin|cos|tan|log|exp|lim|min|max)\b/gu, ''))
   )
     return false;
   return (
     !item.artifact &&
     !item.structureRoles?.some((role) => /^(?:Caption|Note|Reference)$/u.test(role))
+  );
+}
+
+function mathCell(item: SourceText, size: number): boolean {
+  return (
+    shortMath(item) ||
+    (item.fontSize < size * 0.86 && /^[\p{L}\p{N}]{1,8}$/u.test(item.text.trim()))
+  );
+}
+
+function piecewiseCells(items: SourceText[], size: number): boolean {
+  const rows: SourceText[][] = [];
+  const baseline = (item: SourceText) => item.baselineY ?? item.y + item.height / 2;
+  for (const item of items.filter(
+    (item) => item.fontSize >= size * 0.85 && !/^[()[\]{},.;:]+$/u.test(item.text.trim()),
+  )) {
+    const row = rows.find((row) => Math.abs(baseline(row[0]) - baseline(item)) <= size * 0.4);
+    if (row) row.push(item);
+    else rows.push([item]);
+  }
+  if (rows.length < 2 || rows.length > 6) return false;
+  return (
+    rows.every((row) => {
+      row.sort((a, b) => a.x - b.x);
+      const firstCondition = row.findIndex((item) => !mathCell(item, size));
+      if (firstCondition < 0) return row.some((item) => /[\p{L}\p{N}\p{Sm}]/u.test(item.text));
+      if (!firstCondition) return false;
+      const conditions = row
+        .slice(firstCondition)
+        .map((item) => item.text.trim())
+        .join(' ');
+      return (
+        /^(?:if|when|for|otherwise|else)\b/iu.test(conditions) &&
+        conditions.length <= 60 &&
+        conditions.split(/\s+/u).length <= 8 &&
+        row.slice(0, firstCondition).every((item) => mathCell(item, size))
+      );
+    }) && items.every((item) => mathCell(item, size) || rows.some((row) => row.includes(item)))
   );
 }
 
@@ -140,7 +199,7 @@ export function matrixRegions(
   const sizes = items.map((item) => item.fontSize).sort((a, b) => a - b);
   const bodySize = sizes[Math.floor(sizes.length / 2)] ?? 12;
   const delimiters = items.flatMap((item) => {
-    const token = delimiter(item, bodySize);
+    const token = delimiter(item, bodySize, page.graphicRegions);
     return token ? [token] : [];
   });
   const delimiterIds = new Set(delimiters.map((entry) => entry.item.id));
@@ -173,10 +232,15 @@ export function matrixRegions(
         centerY <= bracketRect.y + bracketRect.height + size * 0.75
       );
     });
-    if (!cells.length || cells.some((item) => !shortMath(item)) || cellRows(cells, bodySize) < 2)
+    if (
+      !cells.length ||
+      cellRows(cells, bodySize) < 2 ||
+      (!cells.every((item) => mathCell(item, bodySize)) &&
+        !(left.delimiter.family === 2 && piecewiseCells(cells, bodySize)))
+    )
       continue;
     const members = [...left.items, ...cells, ...right.items];
-    const rect = union(members);
+    const rect = union([bracketRect, ...members]);
     if (rect.height > page.height * 0.5 || proseInside(lines, rect)) continue;
     frames.push({ items: members, rect, size: bodySize });
   }

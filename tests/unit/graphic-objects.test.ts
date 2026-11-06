@@ -36,6 +36,21 @@ function text(id: string, value: string, x: number, y: number, width: number): S
 }
 
 describe('original PDF graphic object bounds', () => {
+  it('does not rejoin independently captioned plots through a shared parent Form', () => {
+    const panels = [
+      { x: 50, y: 50, width: 210, height: 100 },
+      { x: 270, y: 50, width: 210, height: 100 },
+    ];
+    const object = { x: 49, y: 49, width: 432, height: 102 };
+    const source = page([
+      text('left', 'Fig. 5.15 A separate left plot.', 50, 160, 210),
+      text('right', 'Fig. 5.18 A separate right plot.', 270, 160, 210),
+    ]);
+    expect(joinGraphicObjects(panels, [object], source)).toEqual(panels);
+    const shared = page([text('shared', 'Fig. 5.15 Shared (a) and (b) panels.', 50, 160, 430)]);
+    expect(joinGraphicObjects(panels, [object], shared)).toEqual([object]);
+  });
+
   it('maps nested form matrices through a rotated and cropped viewport and restores siblings', () => {
     const operations = list(
       [operators.save, []],

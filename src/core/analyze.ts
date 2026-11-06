@@ -10,7 +10,7 @@ import type {
   SourceText,
   InlineMathSpan,
 } from './model';
-import { clampRect, finiteRect, intersects, union } from './geometry';
+import { clampRect, coveredArea, finiteRect, intersects, union } from './geometry';
 import { persistentColumnBands } from './column-bands';
 import type { ColumnBand } from './column-bands';
 import { mastheadBoundary } from './mastheads';
@@ -20,6 +20,7 @@ import { inferSourceAlignment } from './text-alignment';
 import { formulaRegions } from './formulas';
 import { sharedFigureRegions } from './figure-groups';
 import { matrixRegions } from './matrix-regions';
+import { rotatedTableRegions } from './rotated-tables';
 import { protectInlineRows } from './inline-regions';
 import {
   analyzePageSemantics,
@@ -49,7 +50,7 @@ interface Unit {
   gutter?: number;
 }
 const mathCharacters =
-  /[∑∏∫√∞≠≤≥≈∂∇⊂⊃∈∉∀∃±×÷⇌↔⇒⇔²³¹\u2070-\u209fαβγδεζηθικλμνξοπρστυφχψωΓΔΘΛΞΠΣΥΦΨΩ]/u;
+  /[¼∑∏∫√∞≠≤≥≈∂∇⊂⊃∈∉∀∃±×÷⇌↔⇒⇔²³¹\u2070-\u209fαβγδεζηθικλμνξοπρστυφχψωΓΔΘΛΞΠΣΥΦΨΩ]/u;
 const unspacedScripts = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
 
 function median(values: number[]): number {
@@ -104,6 +105,7 @@ function buildLines(
     let distance = Infinity;
     for (const candidate of rows) {
       const anchor = candidate.anchor;
+      if (Math.abs((anchor.rotation ?? 0) - (item.rotation ?? 0)) > 0.1) continue;
       const centerDistance = Math.abs(anchor.y + anchor.height / 2 - item.y - item.height / 2);
       const anchorBaseline = mathByItem.get(anchor.id)?.baselineY ?? anchor.baselineY;
       const itemBaseline = mathByItem.get(item.id)?.baselineY ?? item.baselineY;
@@ -209,11 +211,18 @@ function mathLine(line: Line, referenceIds = new Set<string>()): boolean {
       .filter((item) => item.fontSize >= size * 0.9 && item.baselineY !== undefined)
       .map((item) => item.baselineY!),
   );
+  const value = itemText(items);
   return (
-    mathCharacters.test(itemText(items)) ||
+    mathCharacters.test(value) ||
+    (/^[\p{L}\p{N}\p{Sm}\p{Mark}_()[\]{}.,:/%!\s]{1,120}$/u.test(value) &&
+      (/[=<>]/u.test(value) || /^[+−-]/u.test(value.trim())) &&
+      items
+        .filter((item) => item.fontSize >= size * 0.9)
+        .flatMap((item) => item.text.match(/[a-z]{4,}/gu) ?? []).length <= 1) ||
     items.some(
       (item) =>
-        /[\u0000\ufffd]/u.test(item.text) || (item.width === 0 && /^\p{Mark}+$/u.test(item.text)),
+        /[\u0000-\u0008\u000b\u000e-\u001f\ufffd]/u.test(item.text) ||
+        (item.width === 0 && /^\p{Mark}+$/u.test(item.text)),
     ) ||
     items.some((item) => /math|symbol|cmsy|cmmi|cmex|msam|msbm/i.test(item.fontName)) ||
     items.some(
@@ -233,12 +242,16 @@ function captionLine(line: Line): boolean {
 }
 
 function equationNumber(line: Line): boolean {
-  return /^[（(]\s*\d+[a-z]?\s*[)）]$/iu.test(line.text.trim());
+  return /^(?:[:：]\s*)?[（(ð]\s*(?:\d+(?:\s*[.:]\s*\d+)*|[a-z](?:\s*[.:]\s*\d+)+)[a-z]?\s*[)）Þ]$/iu.test(
+    line.text.trim(),
+  );
 }
 
 function standaloneMath(line: Line, referenceIds = new Set<string>()): boolean {
   if (captionLine(line) || equationNumber(line) || line.text.length > 150) return false;
-  const longWords = line.text.match(/[a-z]{4,}/giu) ?? [];
+  const longWords = line.items
+    .filter((item) => item.fontSize >= line.fontSize * 0.9)
+    .flatMap((item) => item.text.match(/[a-z]{4,}/gu) ?? []);
   return (
     longWords.length <= 1 &&
     (mathLine(line, referenceIds) || /(?:[a-z\d]\s*[=+−-]\s*[a-z\d])/iu.test(line.text))
@@ -335,10 +348,28 @@ function preservationRegions(
         ),
     ),
   );
+  const crossesProse = (a: Rect, b: Rect): boolean => {
+    const first = Math.min(a.y + a.height / 2, b.y + b.height / 2);
+    const last = Math.max(a.y + a.height / 2, b.y + b.height / 2);
+    return lines.some((line) => {
+      const center = line.rect.y + line.rect.height / 2;
+      return (
+        center > first &&
+        center < last &&
+        sameColumn(a, line.rect) &&
+        !displayLines.has(line) &&
+        line.items
+          .filter((item) => item.fontSize >= line.fontSize * 0.9)
+          .flatMap((item) => item.text.match(/\p{Ll}{4,}/gu) ?? []).length >= 2 &&
+        !line.items.every((item) => ownsPreservedText(a, item) || ownsPreservedText(b, item))
+      );
+    });
+  };
   const regions: PreservationRegion[] = [
     ...formulaRegions(page),
     ...sharedFigureRegions(page, lines),
     ...matrixRegions(page, lines),
+    ...rotatedTableRegions(page),
     ...page.graphicRegions
       .filter(
         (rect) =>
@@ -354,16 +385,38 @@ function preservationRegions(
   ];
   for (const item of page.items.filter((item) => item.preserve))
     regions.push({ rect: pad(item), reason: '회전된 글자와 해당 원문 영역만 보존' });
-  for (const line of lines) {
+  const preservedIds = new Set(
+    page.items
+      .filter((item) => regions.some((region) => ownsPreservedText(region.rect, item)))
+      .map((item) => item.id),
+  );
+  const fixedMath = regions.filter((region) => region.displayMath);
+  for (const original of lines) {
+    const unclaimed = original.items.filter((item) => !preservedIds.has(item.id));
+    if (!unclaimed.length) continue;
+    const line = unclaimed.length === original.items.length ? original : makeLine(unclaimed);
+    const orphanMath =
+      /^[\p{L}\p{N}]{1,4}$/u.test(line.text.trim()) &&
+      fixedMath.some(({ rect }) => {
+        const horizontalGap =
+          Math.max(rect.x, line.rect.x) -
+          Math.min(rect.x + rect.width, line.rect.x + line.rect.width);
+        const verticalGap =
+          Math.max(rect.y, line.rect.y) -
+          Math.min(rect.y + rect.height, line.rect.y + line.rect.height);
+        return horizontalGap <= bodySize * 0.85 && verticalGap <= bodySize * 0.85;
+      });
     if (
-      (mathLine(line, referenceIds) || standaloneMath(line, referenceIds)) &&
+      (orphanMath || mathLine(line, referenceIds) || standaloneMath(line, referenceIds)) &&
       !captionLine(line) &&
       !line.items.some((item) => inlineIds.has(item.id))
     )
       regions.push({
         rect: pad(line.rect),
         reason: '수식 또는 첨자가 포함된 줄을 원문 모양으로 보존',
-        displayMath: displayLines.has(line),
+        displayMath:
+          orphanMath ||
+          (line === original ? displayLines.has(original) : standaloneMath(line, referenceIds)),
       });
   }
   // Gutter detection and large extraction gaps can split one display equation
@@ -375,10 +428,22 @@ function preservationRegions(
     mathChanged = false;
     for (const region of regions) {
       if (!region.displayMath) continue;
+      const strongMath = page.items.some(
+        (item) =>
+          ownsPreservedText(region.rect, item) &&
+          /[=<>¼≤≥≈∑∏∫√∂\u0000-\u0008\u000e-\u001f]/u.test(item.text),
+      );
       const neighbors = lines.filter(
         (line) =>
-          displayLines.has(line) &&
+          (displayLines.has(line) ||
+            (strongMath &&
+              (/^[\p{N}\p{Sm}\p{Mark}\s()[\]{}.,+−-]{1,30}$/u.test(line.text.trim()) ||
+                /^\p{L}[\p{N}_\p{Mark}]*$/u.test(line.text.trim())))) &&
+          !equationNumber(line) &&
+          !line.items.some((item) => inlineIds.has(item.id)) &&
+          !line.items.some((item) => preservedIds.has(item.id)) &&
           sameColumn(region.rect, line.rect) &&
+          !crossesProse(region.rect, line.rect) &&
           nearbyEquation(region.rect, line.rect, bodySize),
       );
       const numbers = lines.filter(
@@ -393,6 +458,7 @@ function preservationRegions(
         (other) =>
           other !== region &&
           sameColumn(region.rect, other.rect) &&
+          !crossesProse(region.rect, other.rect) &&
           (other.displayMath || other.reason === '그림·표·벡터 도형을 원문 모양으로 보존') &&
           nearbyEquation(region.rect, other.rect, bodySize),
       );
@@ -418,7 +484,27 @@ function preservationRegions(
 
 function classify(line: Line, page: SourcePage, bodySize: number): BlockKind {
   const value = line.text.trim();
-  if (captionLine(line)) return 'caption';
+  if (captionLine(line)) {
+    const referenceSentence =
+      /^(?:fig(?:ure)?\.?|table|eq(?:uation)?\.?)\s*[\dIVX]+(?:\s*[.:]\s*\d+)*[a-z]?[.:]?\s+(?:shows?|illustrates?|depicts?|summari[sz]es?|represents?|gives?|indicates?|compares?|lists?|presents?|provides?|describes?|demonstrates?|identifies?|contains?|on|in|for|as|the|this|these|those|it|we|a|an)\b/iu.test(
+        value,
+      );
+    const nearbyGraphic = page.graphicRegions.some((graphic) => {
+      const verticalGap =
+        Math.max(graphic.y, line.rect.y) -
+        Math.min(graphic.y + graphic.height, line.rect.y + line.rect.height);
+      const horizontalGap =
+        Math.max(graphic.x, line.rect.x) -
+        Math.min(graphic.x + graphic.width, line.rect.x + line.rect.width);
+      return (
+        graphic.width >= line.fontSize * 3 &&
+        graphic.height >= line.fontSize * 0.8 &&
+        verticalGap <= line.fontSize * 2 &&
+        horizontalGap <= line.fontSize * 3
+      );
+    });
+    if (!referenceSentence || nearbyGraphic) return 'caption';
+  }
   if (/^(?:\[\d+\]|\d+\.)\s*\S/u.test(value) && /(?:\b(?:19|20)\d{2}\b|doi|https?:)/iu.test(value))
     return 'reference';
   if (line.rect.y > page.height * 0.79 && line.fontSize < bodySize * 0.88) return 'footnote';
@@ -465,6 +551,66 @@ function columnBands(page: SourcePage, items: SourceText[], initial?: ColumnBand
 }
 
 function orderUnits(units: Unit[], gutter: number | undefined): Unit[] {
+  // Explicit contents/index entries can have three narrow columns. Their
+  // already separated crops prove disjoint columns without changing prose order.
+  const entries = units.filter(
+    (unit) => unit.block?.semantic === 'index' || unit.block?.semantic === 'toc',
+  );
+  if (entries.length >= 8 && entries.length >= units.length * 0.7) {
+    const clusters: { right: number; units: Unit[] }[] = [];
+    for (const unit of [...entries].sort((a, b) => a.rect.x - b.rect.x)) {
+      const cluster = clusters.at(-1);
+      if (cluster && unit.rect.x <= cluster.right) {
+        cluster.units.push(unit);
+        cluster.right = Math.max(cluster.right, unit.rect.x + unit.rect.width);
+      } else clusters.push({ right: unit.rect.x + unit.rect.width, units: [unit] });
+    }
+    if (
+      clusters.length >= 2 &&
+      clusters.length <= 3 &&
+      clusters.every(
+        (cluster) =>
+          cluster.units.filter(
+            (unit) => unit.block?.semantic === 'index' || unit.block?.semantic === 'toc',
+          ).length >= 2,
+      )
+    ) {
+      const cuts = clusters
+        .slice(1)
+        .map(
+          (cluster, i) =>
+            (clusters[i].right + Math.min(...cluster.units.map((unit) => unit.rect.x))) / 2,
+        );
+      const barriers = units
+        .filter((unit) =>
+          cuts.some((cut) => unit.rect.x < cut && unit.rect.x + unit.rect.width > cut),
+        )
+        .sort((a, b) => a.rect.y - b.rect.y);
+      const other = units.filter((unit) => !barriers.includes(unit));
+      const result: Unit[] = [];
+      let lower = -Infinity;
+      let band = 0;
+      for (const barrier of [...barriers, undefined]) {
+        const upper = barrier?.rect.y ?? Infinity;
+        const inBand = other.filter((unit) => unit.rect.y >= lower && unit.rect.y < upper);
+        for (let column = 0; column < clusters.length; column++)
+          result.push(
+            ...inBand
+              .filter(
+                (unit) =>
+                  unit.rect.x >= (cuts[column - 1] ?? -Infinity) &&
+                  unit.rect.x < (cuts[column] ?? Infinity),
+              )
+              .sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x)
+              .map((unit) => ({ ...unit, zone: `entries:${band}:${column}` })),
+          );
+        if (barrier) result.push({ ...barrier, zone: `entries:${band}:barrier` });
+        lower = upper;
+        band++;
+      }
+      return result;
+    }
+  }
   if (!gutter)
     return units
       .sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x)
@@ -606,31 +752,42 @@ function analyzePage(
   const workingPage: SourcePage = {
     ...page,
     items: page.items.filter((item) => !specialIds.has(item.id) && !numberIds.has(item.id)),
-    graphicRegions: page.graphicRegions.filter(
-      (region) =>
-        !semantic.blocks.some((block) => {
-          if (block.kind !== 'sourceRegion') return false;
-          if (
-            region.x >= block.rect.x &&
-            region.y >= block.rect.y &&
-            region.x + region.width <= block.rect.x + block.rect.width &&
-            region.y + region.height <= block.rect.y + block.rect.height
-          )
-            return true;
-          if (block.semantic !== 'table') return false;
-          const overlapWidth = Math.max(
-            0,
-            Math.min(region.x + region.width, block.rect.x + block.rect.width) -
-              Math.max(region.x, block.rect.x),
-          );
-          const overlapHeight = Math.max(
-            0,
-            Math.min(region.y + region.height, block.rect.y + block.rect.height) -
-              Math.max(region.y, block.rect.y),
-          );
-          return overlapWidth * overlapHeight >= region.width * region.height * 0.75;
-        }),
-    ),
+    graphicRegions: page.graphicRegions.filter((region) => {
+      const tables = semantic.blocks.filter(
+        (block) => block.kind === 'sourceRegion' && block.semantic === 'table',
+      );
+      if (
+        tables.length >= 2 &&
+        coveredArea(
+          region,
+          tables.map((block) => block.rect),
+        ) >=
+          region.width * region.height * 0.85
+      )
+        return false;
+      return !semantic.blocks.some((block) => {
+        if (block.kind !== 'sourceRegion') return false;
+        if (
+          region.x >= block.rect.x &&
+          region.y >= block.rect.y &&
+          region.x + region.width <= block.rect.x + block.rect.width &&
+          region.y + region.height <= block.rect.y + block.rect.height
+        )
+          return true;
+        if (block.semantic !== 'table') return false;
+        const overlapWidth = Math.max(
+          0,
+          Math.min(region.x + region.width, block.rect.x + block.rect.width) -
+            Math.max(region.x, block.rect.x),
+        );
+        const overlapHeight = Math.max(
+          0,
+          Math.min(region.y + region.height, block.rect.y + block.rect.height) -
+            Math.max(region.y, block.rect.y),
+        );
+        return overlapWidth * overlapHeight >= region.width * region.height * 0.75;
+      });
+    }),
   };
   const initialBands = columnBands(workingPage, workingPage.items);
   const lines = initialBands.flatMap((band) =>
@@ -642,6 +799,7 @@ function analyzePage(
   const fixedRegions = [
     ...formulaRegions(workingPage).map((entry) => entry.rect),
     ...matrixRegions(workingPage, lines).map((entry) => entry.rect),
+    ...rotatedTableRegions(workingPage).map((entry) => entry.rect),
     ...sharedFigureRegions(workingPage, lines).map((entry) => entry.rect),
     ...workingPage.graphicRegions.filter(
       (rect) => rect.width > sourceSize * 5 || rect.height > sourceSize * 3,
@@ -753,12 +911,21 @@ function analyzePage(
       continue;
     }
     const line = unit.line!;
-    const nextKind = classify(line, page, bodySize);
+    let nextKind = classify(line, page, bodySize);
     const zoneWidth = unit.gutter
       ? unit.zone?.endsWith('left')
         ? unit.gutter
         : page.width - unit.gutter
       : page.width - Math.min(...remainingLines.map((entry) => entry.rect.x)) * 2;
+    if (
+      paragraph.length &&
+      kind === 'list' &&
+      nextKind === 'paragraph' &&
+      previousZone === unit.zone &&
+      line.rect.x >= paragraph[0].rect.x + paragraph[0].fontSize * 0.2 &&
+      canJoin(paragraph.at(-1)!, line, kind, zoneWidth)
+    )
+      nextKind = 'list';
     if (
       paragraph.length &&
       (previousZone !== unit.zone ||
@@ -874,14 +1041,28 @@ function runningBlocks(page: SourcePage, content?: RunningContent): ReadingBlock
     const lines = buildLines(page.items.filter((item) => selected.has(item.id)));
     const items = lines.flatMap((line) => line.items);
     if (!items.length) return [];
+    const banner =
+      position === 'header' && !folio
+        ? page.graphicRegions.find(
+            (graphic) =>
+              finiteRect(graphic) &&
+              graphic.x <= page.width * 0.05 &&
+              graphic.width >= page.width * 0.8 &&
+              graphic.y >= 0 &&
+              graphic.y + graphic.height <= page.height * 0.06 &&
+              graphic.height >= 8 &&
+              items.every((item) => ownsPreservedText(graphic, item)),
+          )
+        : undefined;
     return [
       {
         id: `p${page.number}:running:${position}${folio ? ':folio' : ''}`,
-        kind: 'paragraph' as const,
+        kind: banner ? ('sourceRegion' as const) : ('paragraph' as const),
         sourcePage: page.number,
         sourceIds: items.map((item) => item.id),
         sourceSpans: sourceSpans(items),
-        rect: union(items),
+        rect: clampRect(union([...items, ...(banner ? [banner] : [])]), page.width, page.height),
+        ...(banner ? { reason: '반복되는 머리말과 배경을 함께 보존' } : {}),
         text: joinLines(lines),
         rawText: lines.map((line) => line.text).join('\n'),
         fontSize: median(items.map((item) => item.fontSize)),
@@ -894,14 +1075,58 @@ function runningBlocks(page: SourcePage, content?: RunningContent): ReadingBlock
 }
 
 function withoutRunningContent(page: SourcePage, blocks: ReadingBlock[]): SourcePage {
-  if (!blocks.length) return page;
   const ids = new Set(blocks.flatMap((block) => block.sourceIds));
-  const items = page.items.filter((item) => !ids.has(item.id));
+  const furniture = page.items.filter((item) => ids.has(item.id));
+  const items = page.items
+    .filter((item) => !ids.has(item.id))
+    .map((item) => {
+      if (
+        !item.artifact ||
+        (item.x >= 0 &&
+          item.y >= 0 &&
+          item.x + item.width <= page.width &&
+          item.y + item.height <= page.height)
+      )
+        return item;
+      // A clipped marginal artifact must not force otherwise valid body text
+      // into a full-page raster. Preserve only its visible part in place.
+      const rect = clampRect(item, page.width, page.height);
+      return finiteRect(rect) ? { ...item, ...rect, preserve: true } : item;
+    });
   const header = blocks.filter((block) => block.running === 'header');
   const footer = blocks.filter((block) => block.running === 'footer');
   const bodyTop = items.length ? Math.min(...items.map((item) => item.y)) : page.height;
   const bodyBottom = items.length ? Math.max(...items.map((item) => item.y + item.height)) : 0;
   const graphicRegions = page.graphicRegions.filter((region) => {
+    const atFooter = footer.some((block) => {
+      const padding = Math.max(3, block.fontSize * 0.5);
+      return (
+        block.rect.height <= page.height * 0.08 &&
+        region.y + region.height >= block.rect.y - padding &&
+        region.y <= block.rect.y + block.rect.height + padding
+      );
+    });
+    if (
+      furniture.some((item) => {
+        const padding = Math.max(3, item.fontSize);
+        return (
+          region.x >= item.x - padding &&
+          region.y >= item.y - padding &&
+          region.x + region.width <= item.x + item.width + padding &&
+          region.y + region.height <= item.y + item.height + padding
+        );
+      })
+    )
+      return false;
+    if (
+      atFooter &&
+      region.width >= page.width * 0.6 &&
+      region.height <= page.height * 0.08 &&
+      region.y >= bodyBottom + 2 &&
+      region.y + region.height <=
+        Math.max(...footer.map((block) => block.rect.y + block.rect.height)) + 3
+    )
+      return false;
     if (
       header.some(
         (block) =>
@@ -921,7 +1146,7 @@ function withoutRunningContent(page: SourcePage, blocks: ReadingBlock[]): Source
     )
       return false;
     if (
-      footer.length &&
+      atFooter &&
       region.y >= bodyBottom + 2 &&
       region.y + region.height <=
         Math.max(...footer.map((block) => block.rect.y + block.rect.height)) + 3
@@ -934,7 +1159,7 @@ function withoutRunningContent(page: SourcePage, blocks: ReadingBlock[]): Source
 
 export function analyzeDocument(source: SourceDocument): ReadingDocument {
   const running = detectRunningContent(source);
-  const graphics = runningGraphicContent(source);
+  const graphics = runningGraphicContent(source, running);
   const decorations = source.pages.map((page) => {
     const content = running.get(page.number);
     const graphic = graphics.get(page.number);

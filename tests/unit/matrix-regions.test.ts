@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { matrixRegions } from '../../src/core/matrix-regions';
-import type { SourcePage, SourceText } from '../../src/core/model';
+import type { Rect, SourcePage, SourceText } from '../../src/core/model';
 import { ownsPreservedText } from '../../src/core/preservation';
 
 function item(id: string, value: string, x: number, y: number, width = 5): SourceText {
@@ -41,14 +41,14 @@ function vector(prefix: string, x: number, y: number, values = ['x', 'y', 'z']):
   ];
 }
 
-function regions(items: SourceText[]) {
+function regions(items: SourceText[], graphicRegions: Rect[] = []) {
   const page: SourcePage = {
     number: 1,
     width: 540,
     height: 666,
     rotation: 0,
     items,
-    graphicRegions: [],
+    graphicRegions,
     warnings: [],
   };
   return matrixRegions(
@@ -63,6 +63,51 @@ function regions(items: SourceText[]) {
 }
 
 describe('untagged matrix preservation', () => {
+  it('preserves piecewise branches whose tall braces have incomplete text boxes', () => {
+    const math = [
+      item('left', '{', 100, 100, 6),
+      item('right', '}', 285, 100, 6),
+      item('first-variable', 'O', 108, 102, 7),
+      item('first-equals', '=', 118, 102, 7),
+      item('first-function', 'min', 128, 102, 16),
+      { ...item('raised-parenthesis', '(', 145, 100, 4), baselineY: 101 },
+      item('first-base', 'f', 146, 102, 4),
+      { ...item('first-script', 'power', 150, 105, 19), fontSize: 7.5, height: 7.5 },
+      item('first-arguments', '(x,t)', 170, 102, 22),
+      item('first-condition', 'If (2) is satisfied.', 202, 102, 80),
+      item('second-variable', 'O', 108, 114, 7),
+      item('second-equals', '=', 118, 114, 7),
+      item('second-function', 'min', 128, 114, 16),
+      item('second-arguments', '(x,t)', 148, 114, 22),
+      item('second-condition', 'Otherwise', 202, 114, 50),
+    ];
+    const graphics = [
+      { x: 101, y: 111, width: 5, height: 15 },
+      { x: 285, y: 111, width: 6, height: 15 },
+    ];
+    const prose = item('after', 'The following ordinary paragraph remains editable.', 60, 132, 320);
+    const found = regions([...math, prose], graphics);
+    expect(found).toHaveLength(1);
+    expect(math.every((entry) => ownsPreservedText(found[0].rect, entry))).toBe(true);
+    expect(found[0].rect.y + found[0].rect.height).toBeGreaterThanOrEqual(126);
+    expect(ownsPreservedText(found[0].rect, prose)).toBe(false);
+  });
+
+  it('does not promote a braced prose list merely because narrow ink extends its delimiters', () => {
+    const source = [
+      item('left', '{', 100, 100, 6),
+      item('right', '}', 285, 100, 6),
+      item('first', 'Ordinary prose is listed on this line.', 110, 102, 170),
+      item('second', 'Another ordinary sentence continues below.', 110, 114, 170),
+    ];
+    expect(
+      regions(source, [
+        { x: 101, y: 111, width: 5, height: 15 },
+        { x: 285, y: 111, width: 6, height: 15 },
+      ]),
+    ).toEqual([]);
+  });
+
   it('preserves all five rows and their extensible parentheses with an adjacent equality as one object', () => {
     const math = [
       ...vector('left', 200, 80, ['x', 'y', 'z', 'w', 'u']),

@@ -34,11 +34,13 @@ interface Piece {
   row: Row;
 }
 
-const math = /[\u0000\ufffd\p{Sm}\p{Script=Greek}\u2070-\u209f\u20d0-\u20ff·⇌↔⇒⇔²³¹]/u;
+const math =
+  /[\u0000-\u0008\u000b\u000e-\u001f\ufffd\p{Sm}\p{Script=Greek}\u2070-\u209f\u20d0-\u20ff·⇌↔⇒⇔²³¹¼]/u;
 const mathFont = /math|symbol|cmsy|cmmi|cmex|msam|msbm/iu;
 const excludedRole =
   /^(?:H[1-6]|Figure|Caption|Table|TR|TD|TH|Note|FENote|Reference|TOC|TOCI|Index)$/u;
-const compact = /^[\u0000\ufffd\p{Sm}\p{L}\p{N}\p{Mark}_()[\]{},.:;!%/·⇌↔⇒⇔-]{1,20}$/u;
+const compact =
+  /^[\u0000-\u0008\u000b\u000e-\u001f\ufffd\p{Sm}\p{L}\p{N}\p{Mark}_()[\]{},.:;!%/·°◦⇌↔⇒⇔-]{1,20}$/u;
 
 function position(item: SourceText): number {
   return item.baselineY ?? item.y + item.fontSize * 0.8;
@@ -52,26 +54,47 @@ function proseRows(lines: readonly InlineLine[], excluded: ReadonlySet<string>):
     !item.structureRoles?.some((role) => excludedRole.test(role));
   const rows = lines.flatMap((line): Row[] => {
     const items = line.items.filter(allowed);
+    const sizes = items.map((item) => item.fontSize).sort((a, b) => a - b);
+    const ordinarySize = sizes[Math.floor(sizes.length / 2)] ?? line.fontSize;
     const prose = items.filter(
       (item) =>
+        item.fontSize >= ordinarySize * 0.85 &&
         (item.text.match(/\p{L}/gu)?.length ?? 0) >= 8 &&
         /\s/u.test(item.text) &&
+        ((item.text.match(/\p{Ll}{3,}/gu)?.length ?? 0) >= 3 ||
+          /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(item.text)) &&
         !mathFont.test(item.fontName),
     );
     const words = items.filter(
       (item) =>
+        item.fontSize >= ordinarySize * 0.85 &&
         !mathFont.test(item.fontName) &&
         !math.test(item.text) &&
-        /\p{L}{3,}/u.test(item.text) &&
+        /\p{Ll}{3,}/u.test(item.text) &&
         !/^(?:min|max|sin|cos|tan|log|ln|exp|lim|argmin|argmax)$/u.test(item.text.trim()),
     );
-    if (
-      !prose.length &&
-      (words.flatMap((item) => item.text.match(/\p{L}{3,}/gu) ?? []).length < 3 ||
-        words.reduce((sum, item) => sum + (item.text.match(/\p{L}/gu)?.length ?? 0), 0) < 12)
-    )
-      return [];
-    let anchor = [...(prose.length ? prose : words)].sort(
+    const wordCount = words.flatMap((item) => item.text.match(/\p{Ll}{3,}/gu) ?? []).length;
+    const wordLetters = words.reduce(
+      (sum, item) => sum + (item.text.match(/\p{L}/gu)?.length ?? 0),
+      0,
+    );
+    const equalsDefinitions = items.filter(
+      (item) =>
+        item.fontSize >= ordinarySize * 0.85 &&
+        !mathFont.test(item.fontName) &&
+        /^=\s+\p{L}/u.test(item.text.trim()) &&
+        (item.text.match(/\p{Ll}{3,}/gu)?.length ?? 0) >= 2 &&
+        (item.text.match(/\p{L}/gu)?.length ?? 0) >= 12,
+    );
+    // Inline definitions may contain only two ordinary words between long
+    // mathematical expressions, e.g. "The conditional variance ... is".
+    const shortDefinition =
+      (wordCount >= 2 &&
+        wordLetters >= 12 &&
+        items.some((item) => /^(?:the|a|an|is|are|was|were)$/iu.test(item.text.trim()))) ||
+      equalsDefinitions.length > 0;
+    if (!prose.length && !shortDefinition && (wordCount < 3 || wordLetters < 12)) return [];
+    let anchor = [...(prose.length ? prose : words.length ? words : equalsDefinitions)].sort(
       (a, b) => b.text.length - a.text.length,
     )[0];
     const larger = items
@@ -99,6 +122,7 @@ function proseRows(lines: readonly InlineLine[], excluded: ReadonlySet<string>):
       .trim();
     if (
       !value ||
+      /^[()[\]{}.,;:]+$/u.test(value) ||
       value.replace(/\s/gu, '').length > 20 ||
       items.some((item) => /\p{L}{4,}/u.test(item.text))
     )
@@ -154,21 +178,32 @@ function proseRows(lines: readonly InlineLine[], excluded: ReadonlySet<string>):
 }
 
 function nearRow(item: SourceText, rows: readonly Row[]): Row | undefined {
+  const uncertain =
+    /^[\u0000-\u0008\u000b\u000e-\u001f\ufffd()[\]{}]+$/u.test(item.text) ||
+    (item.width === 0 && /^\p{Mark}+$/u.test(item.text));
   const candidates = rows
     .filter((row) => {
       const center = item.x + item.width / 2;
+      const offset = Math.abs(position(item) - row.baseline);
+      const shiftedMathDelimiter =
+        uncertain &&
+        offset <= row.size * 1.8 &&
+        row.items.some(
+          (neighbor) =>
+            neighbor !== item &&
+            math.test(neighbor.text) &&
+            Math.max(item.x - neighbor.x - neighbor.width, neighbor.x - item.x - item.width, 0) <=
+              row.size,
+        );
       return (
         center >= row.rect.x - row.size &&
         center <= row.rect.x + row.rect.width + row.size &&
-        Math.abs(position(item) - row.baseline) <= row.size * 0.9 &&
+        (offset <= row.size * 0.9 || shiftedMathDelimiter) &&
         item.fontSize <= row.size * 1.6
       );
     })
     .sort((a, b) => Math.abs(position(item) - a.baseline) - Math.abs(position(item) - b.baseline));
   const nearest = candidates[0];
-  const uncertain =
-    /^[\u0000\ufffd()[\]{}]+$/u.test(item.text) ||
-    (item.width === 0 && /^\p{Mark}+$/u.test(item.text));
   if (!nearest || !uncertain || Math.abs(position(item) - nearest.baseline) <= nearest.size * 0.35)
     return nearest;
   const support = (row: Row): number => {
@@ -209,16 +244,22 @@ function sliceRect(item: SourceText, start: number, end: number, row: Row): Rect
   const left = total ? weight(item.text.slice(0, start)) / total : 0;
   const right = total ? weight(item.text.slice(0, end)) / total : 1;
   const baseline = position(item);
+  const accent = item.width === 0 && /^\p{Mark}+$/u.test(item.text.slice(start, end).trim());
   const tall =
-    /[∑∏∫√\p{Mark}\u0000\ufffd]/u.test(item.text.slice(start, end)) ||
-    item.height > item.fontSize * 2;
-  const top = tall ? item.y : Math.max(item.y, baseline - item.fontSize * 0.82);
+    !accent &&
+    (/[∑∏∫√\p{Mark}\u0000-\u0008\u000b\u000e-\u001f\ufffd]/u.test(item.text.slice(start, end)) ||
+      item.height > item.fontSize * 2);
+  const top = accent
+    ? Math.min(item.y, baseline - item.fontSize * 1.1)
+    : tall
+      ? item.y
+      : Math.max(item.y, baseline - item.fontSize * 0.82);
   const bottom = tall
     ? item.y + item.height
     : Math.min(item.y + item.height, baseline + item.fontSize * 0.25);
   const shiftedBracket =
     row.baseline - baseline > row.size * 0.4 &&
-    (/^[\u0000\ufffd()[\]{}]+$/u.test(item.text.slice(start, end)) ||
+    (/^[\u0000-\u0008\u000b\u000e-\u001f\ufffd()[\]{}]+$/u.test(item.text.slice(start, end)) ||
       (item.width === 0 && /^\p{Mark}+$/u.test(item.text)));
   return {
     x: item.x + item.width * left,
@@ -267,7 +308,7 @@ export function inlineMathAtoms(
     )
       return;
     const rect = sliceRect(item, start, end, row);
-    if (/^[\u0000\ufffd]$/u.test(item.text.slice(start, end))) {
+    if (/^[\u0000-\u0008\u000b\u000e-\u001f\ufffd]$/u.test(item.text.slice(start, end))) {
       // A missing Unicode mapping may report the .notdef advance (often .25em)
       // although the painted operator is much wider. Keep its complete ink in
       // the available whitespace, stopping before the following source run.
@@ -316,6 +357,24 @@ export function inlineMathAtoms(
       // PDF producers sometimes leave a subscript and following prose in one run.
       const prefix = /^\s*[\p{L}\p{N}]{1,6}[)\]},.;:]*(?=\s)/u.exec(item.text);
       if (prefix) add(item, 0, prefix[0].length, row, true);
+    }
+  }
+  // A zero-advance combining accent can overprint a compact variable which was
+  // emitted separately (including a base and its subscript in the same run).
+  for (const seed of [...pieces]) {
+    if (seed.item.width !== 0 || !/^\p{Mark}+$/u.test(seed.item.text.trim())) continue;
+    for (const item of valid) {
+      if (
+        item === seed.item ||
+        !/^[\p{L}\p{N}]{1,3}$/u.test(item.text.trim()) ||
+        item.width <= 0 ||
+        item.width > seed.row.size * 2 ||
+        Math.abs(position(item) - seed.row.baseline) > seed.row.size * 0.4 ||
+        seed.item.x < item.x - seed.row.size * 0.3 ||
+        seed.item.x > item.x + item.width + seed.row.size * 0.3
+      )
+        continue;
+      add(item, 0, item.text.length, seed.row, true);
     }
   }
   // A base letter may be the last character of a much longer prose item, e.g. `(R` then superscript 2.

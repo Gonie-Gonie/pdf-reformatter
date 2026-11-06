@@ -8,8 +8,9 @@ import { layoutDocument } from '../../core/layout';
 import { attachStructure, markedContentAt } from './structure';
 import { addNoteLinks } from './note-links';
 import { textGeometry } from './text-geometry';
-import { detectGraphicRegions } from './graphics';
+import { detectGraphicRegions, drawingTextIds } from './graphics';
 import { graphicObjectBounds, joinGraphicObjects } from './graphic-objects';
+import { visibleTextItems } from './text-visibility';
 import { readTextAlignments } from './alignment';
 import { textSegments } from '../../core/text-alignment';
 import { validateConfig } from '../../core/config';
@@ -58,6 +59,28 @@ class WorkerCanvasFactory {
   }
 }
 
+/** Request PDF.js's pixel fallbacks for transfer maps and soft masks, without SVG DOM filters. */
+class WorkerFilterFactory {
+  addFilter() {
+    return 'none';
+  }
+  addAlphaFilter() {
+    return 'none';
+  }
+  addLuminosityFilter() {
+    return 'none';
+  }
+  addKnockoutFilter() {
+    return 'none';
+  }
+  addHCMFilter() {
+    return 'none';
+  }
+  destroy() {
+    // Pixel fallbacks create no DOM filter resources.
+  }
+}
+
 export async function openPdf(bytes: Uint8Array, password?: string): Promise<PDFDocumentProxy> {
   return getDocument({
     data: bytes.slice(),
@@ -70,6 +93,7 @@ export async function openPdf(bytes: Uint8Array, password?: string): Promise<PDF
     useSystemFonts: false,
     useWorkerFetch: true,
     CanvasFactory: WorkerCanvasFactory,
+    FilterFactory: WorkerFilterFactory,
     ownerDocument: {
       fonts: (self as unknown as { fonts: FontFaceSet }).fonts,
     } as unknown as HTMLDocument,
@@ -99,19 +123,39 @@ async function raster(page: PDFPageProxy, scale: number, rect?: Rect): Promise<O
   return canvas;
 }
 
+/** Rotate the pixels once so PDF and EPUB use the same natural image orientation. */
+function rotateRaster(canvas: OffscreenCanvas, rotation: 90 | 270): OffscreenCanvas {
+  const rotated = new OffscreenCanvas(canvas.height, canvas.width);
+  const context = rotated.getContext('2d')!;
+  if (rotation === 90) context.setTransform(0, 1, -1, 0, canvas.height, 0);
+  else context.setTransform(0, -1, 1, 0, 0, canvas.width);
+  context.drawImage(canvas, 0, 0);
+  canvas.width = 0;
+  canvas.height = 0;
+  return rotated;
+}
+
 /** Detect figures without allowing a merge to cross a flowing text paragraph. */
 async function detectGraphics(page: PDFPageProxy, source: SourcePage): Promise<Rect[]> {
   const scale = Math.min(1, 1400 / Math.max(source.width, source.height));
   const canvas = await raster(page, scale);
   try {
     const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+    const operations = await page.getOperatorList();
+    const viewport = page.getViewport({ scale: 1 });
+    source.items = visibleTextItems(source.items, operations, OPS, viewport.transform, source, {
+      pixels,
+      width: canvas.width,
+      height: canvas.height,
+      scale,
+    });
+    const drawing = drawingTextIds(source);
+    if (drawing.size)
+      source.items = source.items.map((item) =>
+        drawing.has(item.id) ? { ...item, preserve: true } : item,
+      );
     const regions = detectGraphicRegions(pixels, canvas.width, canvas.height, scale, source);
-    const objects = graphicObjectBounds(
-      await page.getOperatorList(),
-      OPS,
-      page.getViewport({ scale: 1 }).transform,
-      source,
-    );
+    const objects = graphicObjectBounds(operations, OPS, viewport.transform, source);
     return joinGraphicObjects(regions, objects, source);
   } finally {
     canvas.width = 0;
@@ -427,7 +471,7 @@ export async function exportPdf(
   const measure = (text: string, size: number) =>
     runs(text).reduce((sum, run) => sum + run.font.widthOfTextAtSize(run.text, size), 0);
   progress({ stage: 'laying-out', current: 0, total: 1, message: '페이지 구성 중' });
-  const layout = layoutDocument(effective, config, measure);
+  const layout = layoutDocument(effective, config, measure, scopedSource);
   const inBounds = layout.pages.every((page) =>
     page.placements.every(
       (placement) =>
@@ -534,6 +578,9 @@ export async function exportPdf(
             if (recolorMathPixels(pixels.data, canvas.width, canvas.height, theme.foreground))
               context.putImageData(pixels, 0, 0);
           } else canvas = await raster(original, scale, placement.sourceRect);
+          const rotation =
+            !placement.math && !placement.decoration ? placement.rotation : undefined;
+          if (rotation) canvas = rotateRaster(canvas, rotation);
           const png = new Uint8Array(
             await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
           );
@@ -552,8 +599,8 @@ export async function exportPdf(
             epubAssets.images.set(key, {
               path: `images/region-${epubAssets.images.size + 1}.png`,
               bytes: png,
-              width: placement.sourceRect.width,
-              height: placement.sourceRect.height,
+              width: rotation ? placement.sourceRect.height : placement.sourceRect.width,
+              height: rotation ? placement.sourceRect.width : placement.sourceRect.height,
               ...(inline ? { baseline: inline.baselineY - inline.rect.y } : {}),
             });
           }

@@ -64,6 +64,41 @@ function document(pages: SourcePage[]): SourceDocument {
 }
 
 describe('Artifact-supported running header graphics', () => {
+  it('uses repeated top-margin geometry and a proven header for a journal logo on the other side', () => {
+    const pages = [1, 2, 3].map((number) => ({
+      ...page(number),
+      items: [
+        item(`head-${number}`, 'Author and running article title', 35, 24, 250, false),
+        ...page(number).items.filter((entry) => !entry.artifact),
+      ],
+      graphicRegions: [{ x: 457, y: 15, width: 85, height: 20 }],
+    }));
+    const known = new Map(
+      pages.map((page) => [
+        page.number,
+        { headerIds: [`head-${page.number}`], footerIds: [], pageNumberIds: [] },
+      ]),
+    );
+    const result = runningGraphicContent(document(pages), known);
+    for (const number of [1, 2, 3])
+      expect(result.get(number)?.regions).toEqual([{ x: 457, y: 15, width: 85, height: 20 }]);
+  });
+
+  it('accepts a recurring running header as evidence when Artifact tags are absent', () => {
+    const source = page();
+    source.items = source.items.map((entry) => ({ ...entry, artifact: false }));
+    const known = new Map([
+      [
+        3,
+        { headerIds: ['initial', 'surname', 'et', 'al'], footerIds: [], pageNumberIds: ['folio'] },
+      ],
+    ]);
+    expect(runningGraphicContent(document([source]), known).get(3)).toMatchObject({
+      regions: [{ x: 69, y: 23, width: 15, height: 15 }],
+      headerIds: ['initial', 'surname', 'et', 'al'],
+    });
+  });
+
   it('keeps a tiny image with its header row and separates the old folio', () => {
     const source = document([page()]);
     const before = JSON.stringify(source);

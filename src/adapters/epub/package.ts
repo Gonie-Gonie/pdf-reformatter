@@ -370,9 +370,9 @@ export function buildEpub(
     .join('\n');
   const css = `${fontFaces}
 html{background:${theme.background};color:${theme.foreground};}
-body{font-family:"Reflow Primary","Reflow Korean",${config.fontFamily === 'serif' ? 'serif' : 'sans-serif'};font-size:${number(config.fontSizePt / DEFAULT_CONFIG.fontSizePt)}em;line-height:${number(config.lineHeightPt / config.fontSizePt)};margin:0;padding:0;overflow-wrap:break-word;hyphens:auto;}
+body{font-family:"Reflow Primary","Reflow Korean",${config.fontFamily === 'serif' ? 'serif' : 'sans-serif'};font-size:${number(config.fontSizePt / DEFAULT_CONFIG.fontSizePt)}em;line-height:${number(config.lineHeightPercent / 100)};margin:0;padding:0;overflow-wrap:break-word;hyphens:auto;}
 p,aside{margin:0 0 ${number(config.paragraphGapPt / config.fontSizePt)}em;}
-h2,h3,h4,h5,h6{line-height:1.3;margin:1em 0 .5em;break-after:avoid;page-break-after:avoid;}
+h2,h3,h4,h5,h6{margin:1em 0 .5em;break-after:avoid;page-break-after:avoid;}
 h2{font-size:1.35em;}h3,h4,h5,h6{font-size:1.2em;}
 .list{list-style:none;margin:0 0 ${number(config.paragraphGapPt / config.fontSizePt)}em;padding:0 0 0 1em;}
 .source-region{margin:.6em 0;text-align:center;break-inside:avoid;page-break-inside:avoid;}

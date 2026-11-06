@@ -133,8 +133,10 @@ export interface LayoutConfig {
   marginLeftPt: number;
   marginRightPt: number;
   fontSizePt: number;
-  lineHeightPt: number;
+  /** Baseline spacing as a percentage of the current text size (160 = 1.6×). */
+  lineHeightPercent: number;
   paragraphGapPt: number;
+  autoRotateFigures: boolean;
   fontFamily: 'serif' | 'sans';
   theme: ColorTheme;
 }
@@ -155,6 +157,8 @@ export interface RegionPlacement extends Rect {
   blockId: string;
   sourcePage: number;
   sourceRect: Rect;
+  /** Clockwise rotation in the top-left coordinate frame; absent means 0°. */
+  rotation?: 90 | 270;
   /** Source character range for a mathematical object inside a flowing paragraph. */
   textStart?: number;
   textEnd?: number;

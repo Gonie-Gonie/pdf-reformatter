@@ -41,6 +41,161 @@ function source(pages: SourcePage[]): SourceDocument {
 const measure = (value: string, size: number) => (value.length * size) / 2;
 
 describe('reflow continuity', () => {
+  it('keeps a compact illustration below body text and above a running footer', () => {
+    const illustration = { x: 200, y: 670, width: 120, height: 40 };
+    const pages = [1, 2, 3].map((number) => ({
+      ...page(number, [
+        text(
+          `body-${number}`,
+          'The paragraph ends above an uncaptioned illustration.',
+          50,
+          600,
+          500,
+        ),
+        text(`footer-${number}`, 'Journal of Research', 50, 770, 100, 8),
+      ]),
+      graphicRegions: [illustration, { x: 40, y: 758, width: 520, height: 8 }],
+    }));
+    const reading = analyzeDocument(source(pages));
+    for (const number of [1, 2, 3]) {
+      const regions = reading.blocks.filter(
+        (block) => block.sourcePage === number && block.kind === 'sourceRegion' && !block.running,
+      );
+      expect(regions).toHaveLength(1);
+      const crop = regions[0].rect;
+      expect(crop.x).toBeLessThanOrEqual(illustration.x);
+      expect(crop.y).toBeLessThanOrEqual(illustration.y);
+      expect(crop.x + crop.width).toBeGreaterThanOrEqual(illustration.x + illustration.width);
+      expect(crop.y + crop.height).toBeGreaterThanOrEqual(illustration.y + illustration.height);
+      expect(crop.y + crop.height).toBeLessThan(730);
+      expect(
+        reading.blocks.find((block) => block.sourceIds.includes(`footer-${number}`))?.running,
+      ).toBe('footer');
+    }
+  });
+
+  it('routes a vertical publisher stamp and its detected ink to page furniture', () => {
+    const pages = [1, 2, 3].map((number) => ({
+      ...page(number, [
+        text(
+          `body-${number}`,
+          'Ordinary article text must not share a page-sized stamp crop.',
+          50,
+          100,
+          490,
+        ),
+        {
+          ...text(
+            `stamp-${number}`,
+            'Downloaded from the publisher library under its open access licence.',
+            584,
+            17,
+            5,
+            5,
+          ),
+          height: 766,
+          preserve: true,
+          rotation: 90,
+        },
+      ]),
+      graphicRegions: [{ x: 580, y: 13, width: 13, height: 775 }],
+    }));
+    const reading = analyzeDocument(source(pages));
+    for (const number of [1, 2, 3]) {
+      expect(
+        reading.blocks.find((block) => block.sourceIds.includes(`stamp-${number}`))?.running,
+      ).toBe('footer');
+      expect(
+        reading.blocks
+          .filter((block) => block.sourcePage === number && !block.running)
+          .every((block) => block.kind !== 'sourceRegion'),
+      ).toBe(true);
+    }
+  });
+
+  it('keeps hanging list continuations together without absorbing a following paragraph', () => {
+    const reading = analyzeDocument(
+      source([
+        page(1, [
+          text('bullet', '• Participation type. Studies of partici-', 40, 120, 250),
+          text('continuation', 'pation continue on the next original line.', 47, 132, 243),
+          text('next-bullet', '• Assessment method. Another item continues on', 40, 156, 250),
+          text(
+            'next-continuation',
+            'Its indented continuation remains with that item.',
+            47,
+            168,
+            243,
+          ),
+          text('body', 'A separate body paragraph starts at the normal column edge.', 40, 200, 250),
+        ]),
+      ]),
+    );
+    expect(reading.blocks.find((block) => block.sourceIds.includes('bullet'))?.sourceIds).toEqual([
+      'bullet',
+      'continuation',
+    ]);
+    expect(
+      reading.blocks.find((block) => block.sourceIds.includes('next-bullet'))?.sourceIds,
+    ).toEqual(['next-bullet', 'next-continuation']);
+    expect(reading.blocks.find((block) => block.sourceIds.includes('body'))?.kind).toBe(
+      'paragraph',
+    );
+  });
+
+  it('keeps a repeated shallow publisher banner in the running header', () => {
+    const pages = [1, 2, 3].map((number) => ({
+      ...page(number, [
+        text(`header-${number}`, 'www.publisher.org/journal/', 40, 14, 170),
+        text(
+          `body-${number}`,
+          'The article body begins below the running publisher banner.',
+          150,
+          70,
+          390,
+        ),
+      ]),
+      graphicRegions: [{ x: 0, y: 0, width: 600, height: 32 }],
+    }));
+    const reading = analyzeDocument(source(pages));
+    for (const number of [1, 2, 3]) {
+      const header = reading.blocks.find((block) => block.sourceIds.includes(`header-${number}`))!;
+      expect(header.running).toBe('header');
+      expect(header.kind).toBe('sourceRegion');
+      expect(header.rect).toEqual({ x: 0, y: 0, width: 600, height: 32 });
+      expect(reading.blocks.find((block) => block.sourceIds.includes(`body-${number}`))?.kind).toBe(
+        'paragraph',
+      );
+      expect(
+        reading.blocks.filter(
+          (block) => block.sourcePage === number && block.kind === 'sourceRegion',
+        ),
+      ).toHaveLength(1);
+    }
+  });
+
+  it('preserves a clipped marginal artifact without rasterizing the ordinary body', () => {
+    const original = page(1, [
+      text(
+        'body',
+        'The ordinary body remains reflowable beside a marginal artifact.',
+        180,
+        100,
+        370,
+      ),
+      { ...text('artifact', 'x FOR PEER REVIEW', -4, 190, 85), artifact: true },
+    ]);
+    const reading = analyzeDocument(source([original]));
+    expect(reading.blocks.find((block) => block.sourceIds.includes('body'))?.kind).toBe(
+      'paragraph',
+    );
+    const preserved = reading.blocks.find((block) => block.sourceIds.includes('artifact'))!;
+    expect(preserved.kind).toBe('sourceRegion');
+    expect(preserved.rect.x).toBe(0);
+    expect(preserved.rect.width).toBeLessThan(100);
+    expect(reading.blocks.flatMap((block) => block.sourceIds).sort()).toEqual(['artifact', 'body']);
+  });
+
   it('keeps scientific notation local while the surrounding paragraph reflows', () => {
     const run = (
       id: string,

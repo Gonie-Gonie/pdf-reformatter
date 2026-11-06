@@ -25,6 +25,14 @@ function interior(): SourceText[] {
 }
 
 describe('labels immediately outside a figure', () => {
+  it('does not steal a neighboring chapter equation number while retaining a panel label', () => {
+    const equation = item('equation', '(18.13)', 75, 160, 21);
+    const panel = item('panel', '(1)', 86, 200, 9);
+    expect(
+      adjacentFigureLabels([...interior(), equation, panel], figure).map((entry) => entry.id),
+    ).toEqual(['panel']);
+  });
+
   it('keeps compact two-line side annotations with matching internal label typography', () => {
     const labels = [
       item('side-title', 'output', 78, 130, 17),

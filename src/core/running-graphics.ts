@@ -1,5 +1,6 @@
 import { finiteRect, intersects, union } from './geometry';
 import type { Rect, SourceDocument, SourcePage, SourceText } from './model';
+import type { RunningContent } from './running-content';
 
 export interface RunningGraphicContent {
   regions: Rect[];
@@ -49,8 +50,11 @@ function folio(item: SourceText, page: SourcePage): boolean {
   );
 }
 
-/** Tiny margin artwork needs both Artifact-marked running words and a separate folio. */
-export function runningGraphicContent(source: SourceDocument): Map<number, RunningGraphicContent> {
+/** Tiny margin artwork needs proven running words and a separate folio. */
+export function runningGraphicContent(
+  source: SourceDocument,
+  running = new Map<number, RunningContent>(),
+): Map<number, RunningGraphicContent> {
   const result = new Map<number, RunningGraphicContent>();
   for (const page of source.pages) {
     if (
@@ -68,6 +72,8 @@ export function runningGraphicContent(source: SourceDocument): Map<number, Runni
     );
     const bodySize = bodyFontSize(items, page);
     if (!bodySize) continue;
+    const known = running.get(page.number);
+    const proven = new Set([...(known?.headerIds ?? []), ...(known?.pageNumberIds ?? [])]);
     const excludedIds = new Set(
       page.structure
         ?.filter((group) => excludedRole.test(group.role))
@@ -76,7 +82,7 @@ export function runningGraphicContent(source: SourceDocument): Map<number, Runni
     const rows = headerRows(
       items.filter(
         (item) =>
-          item.artifact &&
+          (item.artifact || proven.has(item.id)) &&
           item.y >= 0 &&
           item.y + item.height <= page.height * 0.1 &&
           item.fontSize <= bodySize * 1.2,
@@ -87,6 +93,51 @@ export function runningGraphicContent(source: SourceDocument): Map<number, Runni
     const pageNumberIds = new Set<string>();
     const graphics = page.graphicRegions.filter(finiteRect);
     for (const graphic of graphics) {
+      if (
+        !known?.headerIds.length ||
+        graphic.y < 0 ||
+        graphic.y + graphic.height > page.height * 0.1 ||
+        graphic.width > page.width * 0.25 ||
+        graphic.width < 3 ||
+        graphic.height > bodySize * 4 ||
+        graphic.height < 3
+      )
+        continue;
+      const words = items.filter((item) => known.headerIds.includes(item.id));
+      if (
+        !words.some(
+          (item) =>
+            Math.abs(item.y + item.height / 2 - graphic.y - graphic.height / 2) <=
+            Math.max(item.fontSize, graphic.height * 0.6),
+        )
+      )
+        continue;
+      if (
+        items.some((item) => !proven.has(item.id) && !item.artifact && intersects(item, graphic, 2))
+      )
+        continue;
+      const matches = source.pages.filter((other) =>
+        other.graphicRegions.some(
+          (rect) =>
+            Math.abs(rect.width - graphic.width) <= 2 &&
+            Math.abs(rect.height - graphic.height) <= 2 &&
+            Math.abs(rect.x / other.width - graphic.x / page.width) < 0.02 &&
+            Math.abs(rect.y / other.height - graphic.y / page.height) < 0.01,
+        ),
+      );
+      if (matches.length >= 3) regions.push({ ...graphic });
+    }
+    for (const graphic of graphics) {
+      if (
+        regions.some(
+          (rect) =>
+            rect.x === graphic.x &&
+            rect.y === graphic.y &&
+            rect.width === graphic.width &&
+            rect.height === graphic.height,
+        )
+      )
+        continue;
       if (
         graphic.y < 0 ||
         graphic.y > page.height * 0.08 ||
@@ -131,7 +182,9 @@ export function runningGraphicContent(source: SourceDocument): Map<number, Runni
         }
         const cluster = union([graphic, rect]);
         if (
-          items.some((item) => !item.artifact && intersects(item, cluster, size)) ||
+          items.some(
+            (item) => !item.artifact && !row.includes(item) && intersects(item, cluster, size),
+          ) ||
           graphics.some(
             (other) =>
               other !== graphic &&

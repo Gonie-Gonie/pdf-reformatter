@@ -95,7 +95,8 @@ function labelRect(
   const size =
     placement.type === 'text'
       ? placement.fontSize
-      : (block.fontSize * placement.width) / placement.sourceRect.width;
+      : (block.fontSize * placement.width) /
+        (placement.rotation ? placement.sourceRect.height : placement.sourceRect.width);
   const width = measure(label, size);
   const height = Math.min(location.rect.height, size * 1.25);
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0)

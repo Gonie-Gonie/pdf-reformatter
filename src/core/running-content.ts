@@ -21,6 +21,7 @@ interface MarginRow {
   artifact: boolean;
   embeddedFolio: boolean;
   strictEdge: boolean;
+  outerIds: string[];
 }
 const excludedRoles = new Set([
   'Table',
@@ -105,7 +106,8 @@ function marginRows(page: SourcePage): MarginRow[] {
       [item.x, item.y, item.width, item.height, item.fontSize].every(Number.isFinite) &&
       item.width >= 0 &&
       item.height > 0 &&
-      item.fontSize > 0,
+      item.fontSize > 0 &&
+      Math.abs(item.rotation ?? 0) < 0.5,
   );
   const bodyItems = items.filter(
     (item) =>
@@ -138,7 +140,11 @@ function marginRows(page: SourcePage): MarginRow[] {
     // A last line of a short body paragraph is not a running head merely because
     // a paragraph gap follows it. Only separate folios may lie farther out.
     const farther = edge === 'header' ? rows.slice(0, index) : rows.slice(index + 1);
-    if (farther.some((entries) => entries.some((item) => !folioValue(item.text)))) continue;
+    const outerIds = farther
+      .flat()
+      .filter((item) => !folioValue(item.text))
+      .map((item) => item.id);
+    if (edge === 'header' && outerIds.length) continue;
     const size = median(row.map((item) => item.fontSize));
     const artifact = row.every((item) => item.artifact);
     const text = row
@@ -147,11 +153,10 @@ function marginRows(page: SourcePage): MarginRow[] {
       .normalize('NFKC');
     if (
       text.length > 180 ||
-      size > bodySize * (artifact ? 1.5 : 1.08) ||
+      size > bodySize * (artifact || edge === 'header' ? 1.5 : 1.08) ||
       /^(?:fig(?:ure)?\.?|table|그림|표)\s*\d/iu.test(text) ||
       /^(?:\[\d+\]|\d+[.)]|[*†‡])\s*\S/u.test(text) ||
       /^(?:\d+\.)+\d*\s+\p{L}/u.test(text) ||
-      /\bdoi\b|https?:\/\//iu.test(text) ||
       (!artifact &&
         row.some((item) => item.structureRoles?.some((role) => /^H[1-6]?$/u.test(role))))
     )
@@ -167,7 +172,14 @@ function marginRows(page: SourcePage): MarginRow[] {
     if (neighbor) {
       const box = union(neighbor);
       const gap = edge === 'header' ? box.y - rect.y - rect.height : rect.y - box.y - box.height;
-      if (gap < Math.max(5.5, size * 0.65)) continue;
+      const compactOuterFooter =
+        edge === 'footer' &&
+        rect.y >= page.height * 0.95 &&
+        box.y >= page.height * 0.94 &&
+        size <= bodySize * 0.8 &&
+        Math.abs(median(neighbor.map((item) => item.fontSize)) - size) <= size * 0.15 &&
+        gap >= -size * 0.25;
+      if (gap < Math.max(5.5, size * 0.65) && !compactOuterFooter) continue;
     }
     // Compact tables/illustrations can have repeated headings; broad conservative masks are
     // not used as evidence because they may include unrelated body text.
@@ -178,6 +190,12 @@ function marginRows(page: SourcePage): MarginRow[] {
           graphic.width > page.width * 0.2 &&
           graphic.height > bodySize * 2.5 &&
           graphic.height < page.height * 0.6 &&
+          !(
+            edge === 'header' &&
+            graphic.y >= 0 &&
+            graphic.y + graphic.height <= page.height * 0.06 &&
+            graphic.height <= bodySize * 4
+          ) &&
           intersects(graphic, rect),
       )
     )
@@ -185,7 +203,10 @@ function marginRows(page: SourcePage): MarginRow[] {
     const folios = row.flatMap((item): Folio[] => {
       const value = folioValue(item.text);
       const widthLimit = /(?:page|p\.|of|\/|쪽)/iu.test(item.text) ? 12 : 4.5;
-      if (!value || item.width > item.fontSize * widthLimit || item.fontSize > bodySize * 1.08)
+      // Running folios can be larger than compact table text on the same page.
+      // They still need the repeated position/sequence proof below.
+      const sizeLimit = edge === 'header' && item.y < page.height * 0.08 ? 1.5 : 1.08;
+      if (!value || item.width > item.fontSize * widthLimit || item.fontSize > bodySize * sizeLimit)
         return [];
       const center = item.x + item.width / 2;
       const aligned =
@@ -203,6 +224,12 @@ function marginRows(page: SourcePage): MarginRow[] {
       .replace(/\s+/gu, ' ')
       .trim();
     let embeddedFolio = false;
+    if (
+      edge === 'footer' &&
+      rect.y >= page.height * 0.95 &&
+      /^created\s+(?:from|on|by)\b/iu.test(signature)
+    )
+      signature = signature.replace(/\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b/gu, '<timestamp>');
     if (signature.length > 10 && rect.width > page.width * 0.45) {
       const parts = signature.split(' ');
       if (folioValue(parts[0])) {
@@ -232,6 +259,7 @@ function marginRows(page: SourcePage): MarginRow[] {
         edge === 'header'
           ? rect.y + rect.height < page.height * 0.045
           : rect.y > page.height * 0.955,
+      outerIds,
     });
   }
   return result;
@@ -294,7 +322,25 @@ export function detectRunningContent(source: SourceDocument): Map<number, Runnin
     if (uniquePages(group).size >= 3 && group.every((row) => row.artifact || hasFolio(row)))
       provenShapes.add(shape);
     for (const row of group)
-      if (provenShapes.has(shape) && (row.artifact || hasFolio(row))) selected.add(row);
+      if (
+        provenShapes.has(shape) &&
+        (row.artifact ||
+          hasFolio(row) ||
+          (row.edge === 'footer' && row.strictEdge && /[\p{C}\ufffd]/u.test(row.signature)))
+      )
+        selected.add(row);
+  }
+  // A publisher footer can span several repeated rows, including a DOI and
+  // a volume mark. Inner rows qualify only when every outer row is also proven.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const selectedIds = new Set([...selected].flatMap((row) => row.items.map((item) => item.id)));
+    for (const row of selected) {
+      if (row.outerIds.every((id) => selectedIds.has(id) || recognizedFolios.has(id))) continue;
+      selected.delete(row);
+      changed = true;
+    }
   }
   const result = new Map<number, RunningContent>();
   const add = (page: number): RunningContent => {
@@ -317,6 +363,54 @@ export function detectRunningContent(source: SourceDocument): Map<number, Runnin
       ...row.items.filter((item) => !folioIds.has(item.id)).map((item) => item.id),
     );
   }
+  const sideMarks = new Map<string, { page: number; item: SourceText; proven: boolean }[]>();
+  for (const page of source.pages) {
+    const bodySize = median(
+      page.items
+        .filter((item) => Math.abs(item.rotation ?? 0) < 0.5 && item.text.trim().length >= 15)
+        .map((item) => item.fontSize),
+    );
+    for (const item of page.items) {
+      const value = item.text.trim();
+      const notice =
+        value.length >= 30 &&
+        (item.height >= page.height * 0.5 ||
+          (item.height >= page.height * 0.15 &&
+            /(?:copyright|©|all rights reserved|downloaded\s+from)/iu.test(value)));
+      const content = result.get(page.number);
+      const chapterTab =
+        /^[\p{Lu}\d][\p{Lu}\d /&-]{5,79}$/u.test(value) &&
+        item.height >= item.fontSize * 4 &&
+        item.fontSize >= bodySize * 0.8 &&
+        item.fontSize <= bodySize * 1.8 &&
+        !page.graphicRegions.some(
+          (graphic) =>
+            graphic.width > page.width * 0.1 &&
+            graphic.height > item.fontSize * 2 &&
+            intersects(graphic, item, item.fontSize * 2),
+        );
+      if (
+        Math.abs(Math.abs(item.rotation ?? 0) - 90) > 0.5 ||
+        (!notice && !chapterTab) ||
+        item.width > item.fontSize * 2 ||
+        (item.x > page.width * 0.04 && item.x + item.width < page.width * 0.96) ||
+        item.structureRoles?.some((role) => excludedRoles.has(role))
+      )
+        continue;
+      const position = chapterTab ? `:${Math.round(item.y / page.height / 0.01)}` : '';
+      const key = `${item.x < page.width / 2 ? 'left' : 'right'}:${Math.round(item.fontSize * 2)}:${item.text.normalize('NFKC').replace(/\s+/gu, ' ').trim()}${position}`;
+      const group = sideMarks.get(key) ?? [];
+      group.push({
+        page: page.number,
+        item,
+        proven: notice || Boolean(content?.headerIds.length || content?.pageNumberIds.length),
+      });
+      sideMarks.set(key, group);
+    }
+  }
+  for (const group of sideMarks.values())
+    if (new Set(group.filter((entry) => entry.proven).map((entry) => entry.page)).size >= 3)
+      for (const { page, item } of group) add(page).footerIds.push(item.id);
   for (const content of result.values()) {
     content.headerIds = [...new Set(content.headerIds)];
     content.footerIds = [...new Set(content.footerIds)];

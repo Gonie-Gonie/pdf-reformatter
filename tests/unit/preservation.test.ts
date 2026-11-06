@@ -25,6 +25,24 @@ function seed(rect: Rect, reason = '수식 또는 첨자가 포함된 줄을 원
 }
 
 describe('local preservation ownership', () => {
+  it('keeps a bounded integral crop from expanding through its phantom font ascent into prose', () => {
+    const before = text('before', 50, 80, 180, 10);
+    const integral = { ...text('integral', 100, 82, 8, 30), text: '∫' };
+    const rect = { x: 95, y: 96, width: 20, height: 18 };
+    const regions = closePreservationRegions(
+      { width: 300, height: 300, items: [before, integral] },
+      [
+        { rect, reason: '보이는 수식 영역', displayMath: true, boundedMath: true },
+        { rect: { x: 110, y: 100, width: 10, height: 10 }, reason: '분수 구분선' },
+      ],
+    );
+    expect(regions).toHaveLength(1);
+    expect(regions[0].boundedMath).toBe(true);
+    expect(regions[0].rect.y).toBe(96);
+    expect(ownsPreservedText(regions[0].rect, integral)).toBe(true);
+    expect(ownsPreservedText(regions[0].rect, before)).toBe(false);
+  });
+
   it('does not expand a preserved line through dense neighboring font boxes', () => {
     const items = Array.from({ length: 20 }, (_, index) =>
       text(`line-${index}`, 36, 50 + index * 10.49),

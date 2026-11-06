@@ -371,6 +371,23 @@ input:focus::-webkit-inner-spin-button {
   align-self: flex-start;
   margin-top: 19px;
 }
+.automatic-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.automatic-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--brown);
+  cursor: pointer;
+}
 .main-workspace {
   min-width: 0;
   padding: 28px;

@@ -7,6 +7,8 @@ export interface PreservationRegion {
   reason: string;
   displayMath?: boolean;
   inlineRows?: boolean;
+  /** Bounds already follow visible mathematical ink, rather than oversized font boxes. */
+  boundedMath?: boolean;
 }
 
 /** Font boxes can overlap adjacent baselines even when their visible glyphs do not. */
@@ -80,6 +82,7 @@ export function closePreservationRegions(
   while (changed && passes++ < page.items.length + regions.length + 2) {
     changed = false;
     for (const region of regions) {
+      if (region.boundedMath) continue;
       const items = page.items.filter((item) => ownsPreservedText(region.rect, item));
       const expanded = clampRect(union([region.rect, ...items]), page.width, page.height);
       if (!sameRect(expanded, region.rect)) {
@@ -102,6 +105,7 @@ export function closePreservationRegions(
             : '그림·회전 문자와 인접 영역을 함께 보존';
         a.displayMath ||= b.displayMath;
         a.inlineRows ||= b.inlineRows;
+        a.boundedMath ||= b.boundedMath;
         regions.splice(other, 1);
         changed = true;
       }

@@ -13,11 +13,12 @@ export const DEFAULT_CONFIG: LayoutConfig = {
   pageHeightPt: 2184 * FOLD7_PT_PER_PIXEL,
   marginTopPt: 34,
   marginBottomPt: 34,
-  marginLeftPt: 34,
-  marginRightPt: 34,
-  fontSizePt: 13.2,
-  lineHeightPt: 21.1,
+  marginLeftPt: (9.5 / 25.4) * 72,
+  marginRightPt: (9.5 / 25.4) * 72,
+  fontSizePt: 10.5,
+  lineHeightPercent: 160,
   paragraphGapPt: 8,
+  autoRotateFigures: true,
   fontFamily: 'serif',
   theme: 'warm',
 };
@@ -68,7 +69,10 @@ export const PRESETS = [
   },
 ] as const;
 
-const labels: Record<keyof Omit<LayoutConfig, 'fontFamily' | 'theme'>, string> = {
+const labels: Record<
+  keyof Omit<LayoutConfig, 'fontFamily' | 'theme' | 'autoRotateFigures'>,
+  string
+> = {
   pageWidthPt: '페이지 가로',
   pageHeightPt: '페이지 세로',
   marginTopPt: '위 여백',
@@ -76,7 +80,7 @@ const labels: Record<keyof Omit<LayoutConfig, 'fontFamily' | 'theme'>, string> =
   marginLeftPt: '왼쪽 여백',
   marginRightPt: '오른쪽 여백',
   fontSizePt: '글자 크기',
-  lineHeightPt: '행간',
+  lineHeightPercent: '줄간격',
   paragraphGapPt: '문단 간격',
 };
 
@@ -96,6 +100,9 @@ export function validateConfig(value: unknown): LayoutConfig {
   if (input.fontFamily !== 'serif' && input.fontFamily !== 'sans') {
     throw new RangeError('지원하지 않는 글꼴 설정입니다.');
   }
+  if (typeof input.autoRotateFigures !== 'boolean') {
+    throw new RangeError('큰 표·그림 자동 회전 설정은 참 또는 거짓이어야 합니다.');
+  }
   if (!COLOR_THEMES.some((theme) => theme.id === input.theme)) {
     throw new RangeError('지원하지 않는 색상 설정입니다.');
   }
@@ -111,13 +118,16 @@ export function validateConfig(value: unknown): LayoutConfig {
   if (config.fontSizePt < 6 || config.fontSizePt > 72) {
     throw new RangeError('글자 크기는 6~72 pt 범위로 입력하세요.');
   }
-  if (config.lineHeightPt < config.fontSizePt * 1.05 || config.lineHeightPt > 180) {
-    throw new RangeError('행간은 글자 크기의 1.05배 이상, 180 pt 이하로 입력하세요.');
+  if (config.lineHeightPercent < 100 || config.lineHeightPercent > 1000) {
+    throw new RangeError('줄간격은 100~1000% 범위로 입력하세요.');
   }
+  const lineHeightPt = (config.fontSizePt * config.lineHeightPercent) / 100;
+  if (lineHeightPt > 180)
+    throw new RangeError('줄간격으로 정해지는 줄 높이는 180 pt 이하여야 합니다.');
   if (config.paragraphGapPt > 240) throw new RangeError('문단 간격은 240 pt 이하여야 합니다.');
   const width = config.pageWidthPt - config.marginLeftPt - config.marginRightPt;
   const height = config.pageHeightPt - config.marginTopPt - config.marginBottomPt;
-  if (width < config.fontSizePt * 2 || height < config.lineHeightPt * 2 + 16) {
+  if (width < config.fontSizePt * 2 || height < lineHeightPt * 2 + 16) {
     throw new RangeError(
       '여백을 줄이거나 페이지를 키워 본문 두 글자와 두 줄 이상을 배치할 공간을 확보하세요.',
     );
@@ -130,8 +140,9 @@ export function validateConfig(value: unknown): LayoutConfig {
     marginLeftPt: config.marginLeftPt,
     marginRightPt: config.marginRightPt,
     fontSizePt: config.fontSizePt,
-    lineHeightPt: config.lineHeightPt,
+    lineHeightPercent: config.lineHeightPercent,
     paragraphGapPt: config.paragraphGapPt,
+    autoRotateFigures: config.autoRotateFigures,
     fontFamily: config.fontFamily,
     theme: config.theme,
   };

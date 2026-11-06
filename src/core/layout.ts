@@ -8,6 +8,7 @@ import type {
   ReadingBlock,
   ReadingDocument,
   Rect,
+  SourceDocument,
 } from './model';
 import { validateConfig } from './config';
 import { finiteRect } from './geometry';
@@ -15,6 +16,8 @@ import { justifyLine, textAdvance, textSegments } from './text-alignment';
 import { inlineContent, inlineFragments } from './inline-content';
 import type { InlineAtom } from './inline-content';
 import { wrapParagraph } from './paragraph-wrap';
+import { regionRectToOutput } from './navigation';
+import { fitRotatedRegion } from './auto-rotation';
 
 export type MeasureText = (text: string, fontSize: number) => number;
 const closingPunctuation =
@@ -186,12 +189,12 @@ export function findLayoutAnchor(
       if (right <= left || bottom <= top) continue;
       return {
         page: item.page,
-        rect: {
-          x: placement.x + ((left - source.x) * placement.width) / source.width,
-          y: placement.y + ((top - source.y) * placement.height) / source.height,
-          width: ((right - left) * placement.width) / source.width,
-          height: ((bottom - top) * placement.height) / source.height,
-        },
+        rect: regionRectToOutput(placement, {
+          x: left,
+          y: top,
+          width: right - left,
+          height: bottom - top,
+        }),
       };
     }
     if (placement.textStart === undefined || placement.textEnd === undefined) continue;
@@ -285,10 +288,7 @@ function placeLineNumbers(
     const raised = labels.slice(1).map((label) => {
       const target = label.placement;
       if (target.type !== 'text') return undefined;
-      const leading = Math.max(
-        (config.lineHeightPt * target.fontSize) / config.fontSizePt,
-        target.fontSize * 1.15,
-      );
+      const leading = (target.fontSize * config.lineHeightPercent) / 100;
       const band = leading - target.height;
       if (band < 5.5) return undefined;
       const size = Math.min(numberSize, 6.5, band - 0.5);
@@ -443,6 +443,7 @@ export function layoutDocument(
   reading: ReadingDocument,
   rawConfig: LayoutConfig,
   measure: MeasureText,
+  source?: SourceDocument,
 ): LayoutDocument {
   const config = validateConfig(rawConfig);
   const warnings = [...reading.warnings];
@@ -471,6 +472,7 @@ export function layoutDocument(
   const footerExtra = hasFooter ? Math.max(0, 12 - config.marginBottomPt) : 0;
   const bottom = config.pageHeightPt - config.marginBottomPt - 16 - footerExtra;
   const height = bottom - top;
+  const sourcePages = new Map(source?.pages.map((sourcePage) => [sourcePage.number, sourcePage]));
   const pages: LayoutPage[] = [];
   let page: LayoutPage;
   let y = top;
@@ -495,15 +497,31 @@ export function layoutDocument(
           ? config.fontSizePt / block.fontSize
           : 1;
       const preferredScale = Math.min(mathScale, width / block.rect.width);
-      let scale = Math.min(preferredScale, height / block.rect.height);
-      if (!Number.isFinite(scale) || scale <= 0)
-        throw new RangeError('원문 영역을 배치할 공간이 없습니다.');
-      let regionHeight = block.rect.height * scale;
+      const originalScale = Math.min(preferredScale, height / block.rect.height);
       const caption = followingCaption(reading.blocks, blockIndex);
+      let captionHeight = 0;
       if (caption) {
         const size = fontSize(caption.kind, config.fontSizePt);
-        const leading = Math.max((config.lineHeightPt * size) / config.fontSizePt, size * 1.15);
-        const captionHeight = wrapText(caption.text, width, size, measure).length * leading;
+        const leading = (size * config.lineHeightPercent) / 100;
+        captionHeight = wrapText(caption.text, width, size, measure).length * leading;
+      }
+      // Preserve an existing figure-caption pair; a page-filling figure already
+      // has its caption on the following page and keeps that same flow.
+      const captionReserve =
+        caption &&
+        block.rect.height * originalScale + config.paragraphGapPt + captionHeight <= height + 0.001
+          ? config.paragraphGapPt + captionHeight
+          : 0;
+      const rotated = config.autoRotateFigures
+        ? fitRotatedRegion(block, width, height, captionReserve, sourcePages.get(block.sourcePage))
+        : undefined;
+      const sourceWidth = rotated ? block.rect.height : block.rect.width;
+      const sourceHeight = rotated ? block.rect.width : block.rect.height;
+      let scale = rotated?.scale ?? originalScale;
+      if (!Number.isFinite(scale) || scale <= 0)
+        throw new RangeError('원문 영역을 배치할 공간이 없습니다.');
+      let regionHeight = sourceHeight * scale;
+      if (caption) {
         const pairHeight = regionHeight + config.paragraphGapPt + captionHeight;
         if (
           pairHeight <= height + 0.001 &&
@@ -514,15 +532,16 @@ export function layoutDocument(
       }
       if (y + regionHeight > bottom + 0.001 && page!.placements.length) newPage();
       if (regionHeight > bottom - y) {
-        scale = (bottom - y) / block.rect.height;
-        regionHeight = block.rect.height * scale;
+        scale = (bottom - y) / sourceHeight;
+        regionHeight = sourceHeight * scale;
       }
-      const regionWidth = block.rect.width * scale;
+      const regionWidth = sourceWidth * scale;
       page!.placements.push({
         type: 'region',
         blockId: block.id,
         sourcePage: block.sourcePage,
         sourceRect: block.rect,
+        ...(rotated ? { rotation: rotated.rotation } : {}),
         ...(block.reason?.includes('수식') ? { math: true } : {}),
         x: left + (width - regionWidth) / 2,
         y,
@@ -539,7 +558,7 @@ export function layoutDocument(
     }
     if (!block.text.trim()) continue;
     const size = fontSize(block.kind, config.fontSizePt);
-    const leading = Math.max(config.lineHeightPt * (size / config.fontSizePt), size * 1.15);
+    const leading = (size * config.lineHeightPercent) / 100;
     const indent = block.kind === 'list' ? Math.min(size, width * 0.08) : 0;
     const content = inlineContent(block);
     const atomSizes = new Map<
@@ -591,7 +610,7 @@ export function layoutDocument(
       }
     }
     if (metrics.some((line) => line.height > height + 0.001))
-      throw new RangeError('선택한 글자 크기와 행간을 배치할 페이지 높이가 부족합니다.');
+      throw new RangeError('선택한 글자 크기와 줄간격을 배치할 페이지 높이가 부족합니다.');
     if (
       (block.keepTogether || block.semantic === 'note') &&
       metrics.reduce((sum, line) => sum + line.height, 0) <= height &&

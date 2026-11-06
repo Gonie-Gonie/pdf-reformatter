@@ -1,5 +1,6 @@
 import { clampRect, intersects, union } from './geometry';
 import { codeBlockEntries } from './code-blocks';
+import { findColumnGutter } from './columns';
 import type {
   ReadingBlock,
   ReadingReference,
@@ -32,7 +33,8 @@ export interface PageSemantics {
 }
 const noteRoles = new Set(['Note', 'FENote']);
 const contentsHeading = /^(?:table\s+of\s+contents|contents|목\s*차)\s*$/iu;
-const indexHeading = /^(?:index|subject\s+index|색\s*인|찾아보기)\s*$/iu;
+const indexHeading =
+  /^[\p{Cc}\s]*(?:\d+[\p{Cc}\s]+)?(?:index|subject\s+index|색\s*인|찾아보기)(?:\s+\d+)?[\p{Cc}\s]*$/iu;
 const notesHeading = /^(?:endnotes?|footnotes?|notes|미주|각주|주석)\s*$/iu;
 const pageNumber = /^(?:\d{1,5}|[ivxlcdm]{1,10})(?:\s*[,–—-]\s*(?:\d{1,5}|[ivxlcdm]{1,10}))*$/iu;
 
@@ -116,7 +118,16 @@ function tableRows(items: SourceText[]): Row[] {
     if (
       anchor &&
       Math.abs(baseline(anchor) - baseline(item)) <=
-        Math.max(1, Math.min(anchor.fontSize, item.fontSize) * 0.4)
+        // Superscript units belong to the full-size heading row rather than
+        // becoming a tiny first row that makes ordinary table cells look like prose.
+        Math.max(
+          1,
+          Math.max(anchor.fontSize, item.fontSize) *
+            (Math.min(anchor.fontSize, item.fontSize) <
+            Math.max(anchor.fontSize, item.fontSize) * 0.8
+              ? 0.6
+              : 0.4),
+        )
     )
       last!.push(item);
     else grouped.push([item]);
@@ -129,6 +140,187 @@ function tableRows(items: SourceText[]): Row[] {
   }));
 }
 
+function tableSegments(row: Row): { x: number; right: number }[] {
+  const groups: { x: number; right: number }[] = [];
+  for (const item of row.items) {
+    const previous = groups.at(-1);
+    if (previous && item.x - previous.right <= Math.max(3, row.size * 0.8))
+      previous.right = Math.max(previous.right, item.x + item.width);
+    else groups.push({ x: item.x, right: item.x + item.width });
+  }
+  return groups;
+}
+
+/** A small three-column table can have long wrapped cells and only disconnected edge ink. */
+function wrappedTableEntry(
+  page: SourcePage,
+  available: SourceText[],
+  caption: SourceText,
+  textSize: number,
+): TaggedEntry | undefined {
+  const compact = available.filter(
+    (item) =>
+      item.y > caption.y + caption.fontSize &&
+      item.y < caption.y + textSize * 50 &&
+      item.x >= caption.x - textSize * 2 &&
+      item.fontSize < caption.fontSize * 0.98,
+  );
+  const lines = tableRows(compact);
+  const first = lines.find(
+    (row) =>
+      row.y < caption.y + textSize * 8 &&
+      Math.abs(row.x - caption.x) < textSize * 2 &&
+      tableSegments(row).length === 3,
+  );
+  if (!first) return;
+  const starts = tableSegments(first).map((segment) => segment.x);
+  const guides = page.graphicRegions.filter(
+    (region) =>
+      region.x >= first.x - textSize * 2 &&
+      region.x + region.width <= first.x + first.width + textSize * 4 &&
+      region.width >= textSize &&
+      region.height <= textSize * 3,
+  );
+  const header = guides.filter(
+    (region) => region.y >= first.y - textSize && region.y <= first.y + first.height,
+  );
+  if (!header.length) return;
+  const endings: Rect[][] = [];
+  for (const region of guides.filter(
+    (edge) =>
+      edge.y > first.y + first.size * 5 &&
+      edge.height <= textSize &&
+      edge.y < caption.y + textSize * 50,
+  )) {
+    const same = endings.find((parts) => Math.abs(parts[0].y - region.y) < textSize);
+    if (same) same.push(region);
+    else endings.push([region]);
+  }
+  for (const closing of endings.map(union).sort((a, b) => a.y - b.y)) {
+    if (
+      closing.width < first.width * 0.9 ||
+      closing.x > first.x + textSize ||
+      closing.x + closing.width < first.x + first.width
+    )
+      continue;
+    const entries = compact.filter(
+      (item) =>
+        item.y >= first.y - first.size * 0.5 &&
+        item.y + item.height / 2 < closing.y + closing.height &&
+        item.x >= closing.x - 1 &&
+        item.x + item.width <= closing.x + closing.width + 1,
+    );
+    const matrix = tableRows(entries);
+    if (
+      matrix.length < 6 ||
+      starts.some(
+        (x) =>
+          matrix.filter((row) =>
+            tableSegments(row).some((segment) => Math.abs(segment.x - x) <= first.size * 1.2),
+          ).length < 4,
+      )
+    )
+      continue;
+    // A prose line crossing a cell boundary invalidates the proposed table envelope.
+    if (
+      entries.some((item) =>
+        starts
+          .slice(1)
+          .some((x) => item.x < x - first.size * 0.5 && item.x + item.width > x + first.size * 0.5),
+      )
+    )
+      continue;
+    const box = union(entries);
+    if (closing.y - box.y - box.height > textSize * 2) continue;
+    return { id: `ruled:${caption.id}`, items: entries, bounds: union([box, ...header, closing]) };
+  }
+}
+
+/** Text masking sometimes leaves only tiny header-rule fragments above a dense matrix. */
+function fragmentedTableEntry(
+  page: SourcePage,
+  available: SourceText[],
+  caption: SourceText,
+  textSize: number,
+): TaggedEntry | undefined {
+  const compact = tableRows(
+    available.filter(
+      (item) =>
+        item.y > caption.y + caption.fontSize &&
+        item.y < caption.y + textSize * 25 &&
+        item.fontSize < caption.fontSize * 0.98,
+    ),
+  );
+  const first = compact.find(
+    (row) =>
+      row.y < caption.y + textSize * 8 &&
+      Math.abs(row.x - caption.x) < textSize * 2 &&
+      tableSegments(row).length >= 4,
+  );
+  if (!first) return;
+  const matrix: Row[] = [];
+  for (const row of compact.slice(compact.indexOf(first))) {
+    const previous = matrix.at(-1);
+    if (
+      tableSegments(row).length < 4 ||
+      Math.abs(row.size - first.size) > first.size * 0.15 ||
+      (previous && row.y - previous.y > first.size * 2.5)
+    )
+      break;
+    matrix.push(row);
+  }
+  if (matrix.length < 5) return;
+  const starts = tableSegments(first).map((segment) => segment.x);
+  if (
+    starts.filter(
+      (x) =>
+        matrix.filter((row) =>
+          tableSegments(row).some((segment) => Math.abs(segment.x - x) <= first.size),
+        ).length >= 5,
+    ).length < 4
+  )
+    return;
+  const entries = matrix.flatMap((row) => row.items),
+    cells = union(entries),
+    guides = page.graphicRegions.filter(
+      (region) =>
+        region.height <= textSize &&
+        region.width >= first.size * 2 &&
+        region.x >= cells.x - textSize * 2 &&
+        region.x + region.width <= cells.x + cells.width + textSize * 2,
+    ),
+    header = guides.filter(
+      (region) => region.y >= first.y - textSize && region.y <= first.y + first.height,
+    ),
+    last = matrix.at(-1)!,
+    footer = guides.filter(
+      (region) =>
+        region.y >= last.y + last.height - textSize && region.y <= last.y + last.height + textSize,
+    );
+  if (!header.length || !footer.length) return;
+  const closing = union(footer);
+  if (
+    closing.width < cells.width * 0.65 ||
+    Math.abs(closing.x + closing.width / 2 - cells.x - cells.width / 2) > textSize * 2
+  )
+    return;
+  return {
+    id: `ruled:${caption.id}`,
+    items: entries,
+    bounds: union([
+      {
+        ...cells,
+        x: cells.x - first.size,
+        y: first.y - first.size,
+        width: cells.width + first.size * 2,
+        height: cells.height + first.size,
+      },
+      ...header,
+      closing,
+    ]),
+  };
+}
+
 /** A caption, ruled edges and repeated cell columns are all required for untagged tables. */
 function ruledTableEntries(
   page: SourcePage,
@@ -138,46 +330,114 @@ function ruledTableEntries(
   const candidates: TaggedEntry[] = [];
   const available = page.items.filter((item) => !claimed.has(item.id));
   const baseline = (item: SourceText) => item.baselineY ?? item.y + item.fontSize;
-  const isCaption = (caption: SourceText) =>
-    /^(?:table|표)\s*\d+[a-z]?[.:]?\s*$/iu.test(caption.text.trim()) &&
-    !caption.structureRoles?.includes('Link') &&
-    !available.some(
-      (item) =>
-        item !== caption &&
-        Math.abs(baseline(item) - baseline(caption)) < caption.fontSize * 0.3 &&
-        item.x >= caption.x + caption.width - caption.fontSize * 0.1 &&
-        item.x - caption.x - caption.width < caption.fontSize * 2,
+  const captionStart =
+    /^(?:table|표)\s*(?:\d+(?:\.\d+)*[a-z]?|[a-z](?:\.\d+)+|[IVXLC]+)(?:[.:](?:\s|$)|\s*$)/iu;
+  const isCaption = (caption: SourceText) => {
+    if (!captionStart.test(caption.text.trim()) || caption.structureRoles?.includes('Link'))
+      return false;
+    // A punctuated table label can share a PDF baseline with its title or "Cont.".
+    // An unpunctuated inline reference followed by ordinary prose is ambiguous.
+    return (
+      /^(?:table|표)\s*(?:\d+(?:\.\d+)*[a-z]?|[a-z](?:\.\d+)+|[IVXLC]+)[.:](?:\s|$)/iu.test(
+        caption.text.trim(),
+      ) ||
+      /^(?:table|표)\s*(?:\d+|[a-z])\.\d+(?:\.\d+)*[a-z]?$/iu.test(caption.text.trim()) ||
+      !available.some(
+        (item) =>
+          item !== caption &&
+          Math.abs(baseline(item) - baseline(caption)) < caption.fontSize * 0.3 &&
+          item.x >= caption.x + caption.width - caption.fontSize * 0.1 &&
+          item.x - caption.x - caption.width < caption.fontSize * 2,
+      )
     );
+  };
   for (const caption of available) {
     const textSize = Math.max(bodySize, caption.fontSize);
     if (!isCaption(caption)) continue;
-    const nearRules = page.graphicRegions.filter(
+    const nearParts = page.graphicRegions.filter(
       (region) =>
-        region.y > caption.y &&
+        region.y >= caption.y - textSize * 2 &&
+        region.y + region.height > baseline(caption) + textSize * 0.4 &&
         region.y < caption.y + caption.fontSize * 12 &&
-        region.height <= textSize * 3 &&
-        region.width >= textSize,
+        region.height <= textSize * 6 &&
+        region.width >= textSize * 2,
     );
-    if (!nearRules.length) continue;
-    const fullWidth = nearRules.some((region) => region.width > page.width * 0.55);
-    const left = caption.x - caption.fontSize,
-      right = fullWidth || caption.x >= page.width * 0.45 ? page.width : page.width / 2;
+    const nearRows: Rect[][] = [];
+    for (const region of nearParts) {
+      const same = nearRows.find((row) => {
+        const box = union(row);
+        return (
+          Math.abs(box.y - region.y) <= textSize * 0.8 ||
+          Math.min(box.y + box.height, region.y + region.height) > Math.max(box.y, region.y)
+        );
+      });
+      if (same) same.push(region);
+      else nearRows.push([region]);
+    }
+    const nearRules = nearRows
+      .map(union)
+      .filter(
+        (region) =>
+          region.width >= Math.max(60, textSize * 8) &&
+          caption.x >= region.x - textSize * 4 &&
+          caption.x <= region.x + region.width + textSize * 2,
+      )
+      .sort((a, b) => a.y - b.y || b.width - a.width);
+    let anchor = nearRules[0];
+    if (!anchor) {
+      const fragmented =
+        fragmentedTableEntry(page, available, caption, textSize) ??
+        wrappedTableEntry(page, available, caption, textSize);
+      if (fragmented) candidates.push(fragmented);
+      continue;
+    }
+    // A multi-line heading can mask most of its top rule. Its surviving edge
+    // fragments still extend a lower, more complete separator to the full width.
+    const initialAnchor = anchor;
+    anchor = union([
+      anchor,
+      ...nearParts.filter((region) => {
+        if (region.y >= initialAnchor.y) return false;
+        const combined = union([region, initialAnchor]);
+        const overlap =
+          Math.min(region.x + region.width, initialAnchor.x + initialAnchor.width) -
+          Math.max(region.x, initialAnchor.x);
+        return (
+          (overlap > Math.min(region.width, initialAnchor.width) * 0.25 &&
+            combined.width <= initialAnchor.width * 1.3) ||
+          (overlap >= -textSize * 4 &&
+            combined.width <= initialAnchor.width * 2.5 &&
+            page.graphicRegions.some(
+              (edge) =>
+                edge.y > initialAnchor.y + initialAnchor.height &&
+                edge.y < caption.y + textSize * 50 &&
+                edge.height < textSize &&
+                edge.width >= combined.width * 0.65 &&
+                Math.abs(edge.x - combined.x) < textSize * 2 &&
+                Math.abs(edge.x + edge.width - combined.x - combined.width) < textSize * 2,
+            ))
+        );
+      }),
+    ]);
+    if (caption.x < anchor.x && anchor.x - caption.x < textSize * 4)
+      anchor = { ...anchor, x: caption.x, width: anchor.x + anchor.width - caption.x };
+    // Centered tables often cross the page midpoint without spanning its full width.
+    // Their own rules define the column envelope more reliably than the page gutter.
+    const left = anchor.x - textSize,
+      right = anchor.x + anchor.width + textSize;
     const inColumn = (rect: Rect) => rect.x >= left && rect.x + rect.width <= right + 1;
     const columnRows = tableRows(
       available.filter((item) => inColumn(item) && item.y > caption.y + caption.fontSize * 0.5),
     );
-    const divided = (row: Row) =>
-      row.items.some(
-        (item, index) =>
-          index > 0 &&
-          item.x - row.items[index - 1].x - row.items[index - 1].width > textSize * 1.2,
-      );
+    const segments = tableSegments;
+    const divided = (row: Row) => segments(row).length >= 2;
     const first = columnRows.find(
       (row) =>
         row.y < caption.y + caption.fontSize * 12 &&
-        row.size < textSize * 0.94 &&
-        divided(row) &&
-        nearRules.some((region) => inColumn(region) && Math.abs(region.y - row.y) < textSize * 3),
+        row.y + row.height / 2 >= anchor.y &&
+        row.size <= textSize * 1.15 &&
+        (divided(row) || row.width <= anchor.width) &&
+        nearRules.some((region) => Math.abs(region.y - row.y) < textSize * 3),
     );
     if (!first) continue;
     const after = columnRows.filter((row) => row.y >= first.y - first.size * 0.8);
@@ -190,39 +450,270 @@ function ruledTableEntries(
         .filter((item) => item.y > first.y && inColumn(item) && isCaption(item))
         .map((item) => item.y),
     );
-    const end = Math.min(stop?.y ?? page.height, nextCaption, page.height * 0.95);
-    const rules = page.graphicRegions.filter(
+    const end = Math.min(stop?.y ?? page.height, nextCaption, page.height);
+    const ruleParts = page.graphicRegions.filter(
       (region) =>
-        inColumn(region) &&
-        region.height <= textSize * 3 &&
+        region.height <= textSize * 6 &&
         region.width >= textSize &&
-        region.y >= first.y - textSize * 3 &&
+        region.x >= anchor.x - textSize * 2 &&
+        region.x + region.width <= anchor.x + anchor.width + textSize * 2 &&
+        region.y >= Math.min(anchor.y, first.y - textSize * 3) &&
         region.y + region.height < end,
     );
+    // Masked cell text can break one horizontal rule into disconnected fragments.
+    const ruleRows: Rect[][] = [];
+    for (const region of ruleParts) {
+      const same = ruleRows.find((row) => {
+        const box = union(row);
+        return (
+          Math.abs(box.y - region.y) <= textSize * 0.8 ||
+          Math.min(box.y + box.height, region.y + region.height) > Math.max(box.y, region.y)
+        );
+      });
+      if (same) same.push(region);
+      else ruleRows.push([region]);
+    }
+    const rules = ruleRows
+      .map(union)
+      .filter(
+        (region) =>
+          region.width >= anchor.width * 0.65 &&
+          (Math.abs(region.x - anchor.x) <= textSize * 2 ||
+            Math.abs(region.x + region.width / 2 - anchor.x - anchor.width / 2) <= textSize * 2),
+      );
     if (
       rules.length < 2 ||
       Math.max(...rules.map((region) => region.y)) - Math.min(...rules.map((region) => region.y)) <
         textSize * 2
     )
       continue;
-    const bottom = Math.max(...rules.map((region) => region.y + region.height));
-    const cellRows = after.filter((row) => row.y < bottom && row.y < end);
-    const matrix = cellRows.filter(divided);
-    if (matrix.length < 3) continue;
-    const starts = new Map<number, Set<Row>>();
-    for (const row of matrix)
-      for (const item of row.items) {
-        const x = Math.round(item.x / (first.size * 0.6)) * first.size * 0.6;
-        const seen = starts.get(x) ?? new Set<Row>();
-        seen.add(row);
-        starts.set(x, seen);
+    let bottom = Math.max(...rules.map((region) => region.y + region.height));
+    // Continued tables may have only top/header rules; a dense aligned run
+    // below them remains a table when no closing rule survives text masking.
+    const openRows: Row[] = [];
+    for (const row of after) {
+      if (!divided(row) || Math.abs(row.size - first.size) > first.size * 0.15) {
+        if (openRows.length) break;
+        continue;
       }
-    const stable = [...starts].filter(([, seen]) => seen.size >= 3).map(([x]) => x);
-    if (!stable.some((x) => stable.some((other) => other - x > first.size * 2.5))) continue;
-    candidates.push({ id: `ruled:${caption.id}`, items: cellRows.flatMap((row) => row.items) });
+      if (
+        openRows.length &&
+        row.y - openRows.at(-1)!.y > first.size * (openRows.length === 1 ? 3.5 : 2.5)
+      )
+        break;
+      if (row.y >= end) break;
+      openRows.push(row);
+    }
+    if (openRows.length >= 5 && bottom < openRows.at(-1)!.y) {
+      const columns = tableSegments(openRows[0]).filter(
+        (segment) =>
+          openRows.filter((row) =>
+            tableSegments(row).some((other) => Math.abs(other.x - segment.x) <= first.size),
+          ).length >= 5,
+      );
+      if (columns.length >= 2) bottom = openRows.at(-1)!.y + openRows.at(-1)!.height;
+    }
+    const cellRows = columnRows.filter(
+      (row) =>
+        row.y >= Math.min(anchor.y, first.y - first.size * 0.8) && row.y < bottom && row.y < end,
+    );
+    const matrix = cellRows.filter(divided);
+    if (matrix.length < 3) {
+      const singleColumn =
+        matrix.length === 0 &&
+        cellRows.length >= 5 &&
+        cellRows.every((row) => Math.abs(row.x - first.x) <= first.size * 2);
+      if (!singleColumn && !(matrix.length >= 2 && rules.length >= 3)) continue;
+    }
+    const starts: { x: number; rows: Set<Row> }[] = [];
+    for (const row of matrix)
+      for (const segment of segments(row)) {
+        const existing = starts.find((entry) => Math.abs(entry.x - segment.x) <= first.size * 0.8);
+        if (existing) existing.rows.add(row);
+        else starts.push({ x: segment.x, rows: new Set([row]) });
+      }
+    const stable = starts
+      .filter((entry) => entry.rows.size >= Math.min(3, matrix.length))
+      .map((entry) => entry.x);
+    if (matrix.length && !stable.some((x) => stable.some((other) => other - x > first.size * 2.5)))
+      continue;
+    candidates.push({
+      id: `ruled:${caption.id}`,
+      items: cellRows.flatMap((row) => row.items),
+      bounds: union([anchor, ...rules]),
+    });
   }
   return candidates;
 }
+
+/** Uncaptioned appendix matrices still need multiple rules and three recurring cell columns. */
+function uncaptionedTableEntries(
+  page: SourcePage,
+  claimed: Set<string>,
+  size: number,
+): TaggedEntry[] {
+  const found: TaggedEntry[] = [];
+  const guides = page.graphicRegions
+    .filter(
+      (r) =>
+        r.width >= size * 20 &&
+        r.height <= size * 4 &&
+        (r.height <= size || r.width >= r.height * 12),
+    )
+    .map((r) =>
+      r.height <= size
+        ? r
+        : {
+            ...r,
+            y: r.y + r.height - size * 0.6,
+            height: size * 0.6,
+          },
+    );
+  for (const top of guides) {
+    const separator = guides.find(
+      (r) =>
+        r.y > top.y + size &&
+        r.y < top.y + size * 6 &&
+        Math.abs(r.x - top.x) < size &&
+        Math.abs(r.width - top.width) < size * 2,
+    );
+    if (!separator) continue;
+    const inWidth = page.items.filter(
+      (item) =>
+        !claimed.has(item.id) &&
+        !found.some((entry) => entry.items.includes(item)) &&
+        item.x >= top.x - 1 &&
+        item.x + item.width <= top.x + top.width + 1 &&
+        item.y >= top.y &&
+        item.fontSize <= size * 1.15,
+    );
+    const lines = tableRows(inWidth);
+    const headers = lines.filter((r) => r.y < separator.y);
+    if (!headers.some((r) => tableSegments(r).length >= 3)) continue;
+    const run: Row[] = [];
+    for (const row of lines.filter((r) => r.y >= separator.y)) {
+      const segments = tableSegments(row);
+      const starts = run.length ? tableSegments(run[0]).map((segment) => segment.x) : [];
+      const continuation =
+        run.length >= 8 &&
+        Math.abs(row.size - run[0].size) < size * 0.15 &&
+        segments.every((segment) =>
+          starts.some(
+            (x, index) =>
+              segment.x >= x - size &&
+              segment.x < x + size * 4 &&
+              segment.right <= (starts[index + 1] ?? top.x + top.width) + 1,
+          ),
+        );
+      if (
+        (segments.length < 3 && !continuation) ||
+        (run.length && row.y - run.at(-1)!.y > size * 2.5)
+      )
+        break;
+      run.push(row);
+    }
+    if (run.length < 8) continue;
+    const stable = tableSegments(run[0]).filter(
+      (segment) =>
+        run.filter((row) =>
+          tableSegments(row).some((other) => Math.abs(other.x - segment.x) < size),
+        ).length >= 8,
+    );
+    if (stable.length < 3) continue;
+    const entries = [...headers, ...run].flatMap((r) => r.items);
+    const box = union(entries);
+    found.push({
+      id: `matrix:${entries[0].id}`,
+      items: entries,
+      bounds: union([
+        top,
+        separator,
+        box,
+        ...guides.filter(
+          (r) =>
+            r.y >= box.y + box.height &&
+            r.y < box.y + box.height + size &&
+            Math.abs(r.x - top.x) < size &&
+            Math.abs(r.width - top.width) < size * 2,
+        ),
+      ]),
+    });
+  }
+  return found;
+}
+
+/** Split an explicitly labelled index/contents page before pairing entries and page numbers. */
+function entryColumns(items: SourceText[], width: number): SourceText[][] {
+  const split = (
+    entries: SourceText[],
+    left: number,
+    right: number,
+    depth: number,
+  ): SourceText[][] => {
+    if (depth >= 2) return [entries];
+    const local = entries.map((item) => ({ ...item, x: item.x - left }));
+    const size = median(entries.map((item) => item.fontSize));
+    const last = Math.max(...entries.map((item) => item.y));
+    const spacedHeading = (item: SourceText) => /(?:\p{L}\s+){5}/u.test(item.text);
+    const body = local.filter((item) => item.y < last - size * 4 && !spacedHeading(item));
+    const intervals: { left: number; right: number }[] = [];
+    for (const item of [...body].sort((a, b) => a.x - b.x)) {
+      const previous = intervals.at(-1);
+      if (previous && item.x <= previous.right)
+        previous.right = Math.max(previous.right, item.x + item.width);
+      else intervals.push({ left: item.x, right: item.x + item.width });
+    }
+    const clear = intervals
+      .slice(1)
+      .map((interval, i) => ({
+        x: (interval.left + intervals[i].right) / 2,
+        width: interval.left - intervals[i].right,
+      }))
+      .filter(
+        (gap) =>
+          gap.width >= size * 0.8 &&
+          gap.x >= (right - left) * 0.2 &&
+          gap.x <= (right - left) * 0.8 &&
+          [body.filter((item) => item.x < gap.x), body.filter((item) => item.x >= gap.x)].every(
+            (side) => side.filter((item) => /\p{L}{3}/u.test(item.text)).length >= 4,
+          ),
+      )
+      .sort((a, b) => b.width - a.width)[0];
+    const gutter = clear?.x ?? findColumnGutter(local, right - left);
+    if (gutter === undefined) return [entries];
+    const x = gutter + left;
+    // A heading spanning the gutter belongs to the page, not either entry column.
+    const crossing = entries.filter((item) => item.x < x && item.x + item.width > x);
+    const firstPaired = Math.min(
+      ...rows(entries.filter((item) => !crossing.includes(item)))
+        .filter((row) =>
+          [row.items.filter((item) => item.x < x), row.items.filter((item) => item.x >= x)].every(
+            (side) => side.some((item) => /\p{L}{3}/u.test(item.text)),
+          ),
+        )
+        .map((row) => row.y),
+    );
+    if (
+      crossing.some(
+        (item) =>
+          !spacedHeading(item) &&
+          (!Number.isFinite(firstPaired) || item.y + item.height > firstPaired - size * 0.25) &&
+          item.y < Math.max(...entries.map((entry) => entry.y)) - item.fontSize * 4,
+      )
+    )
+      return [entries];
+    const before = entries.filter((item) => item.x + item.width <= x);
+    const after = entries.filter((item) => item.x >= x);
+    if (before.length < 3 || after.length < 3) return [entries];
+    return [
+      ...split(before, left, x, depth + 1),
+      ...split(after, x, right, depth + 1),
+      ...(crossing.length ? [crossing] : []),
+    ];
+  };
+  return split(items, 0, width, 0);
+}
+
 function label(text: string): string | undefined {
   const match =
     /^(?:\[\s*(\d{1,3})\s*\]|[（(]\s*(\d{1,3})\s*[)）]|(\d{1,3})(?:[.)]|(?=\s|$))|([*†‡]))/u.exec(
@@ -312,6 +803,7 @@ function descendantOf(
 interface TaggedEntry {
   id: string;
   items: SourceText[];
+  bounds?: Rect;
 }
 
 function paragraphEntries(
@@ -400,7 +892,7 @@ function entryWithPrecedingLines(
       previous.y <= after ||
       endings.has(previous) ||
       previous.items.some((item) => claimed.has(item.id)) ||
-      !/\p{L}/u.test(previous.text) ||
+      (!/\p{L}/u.test(previous.text) && !pageNumber.test(previous.text.trim())) ||
       gap < -1 ||
       gap > size * 1.5 ||
       Math.abs(previous.size - current.size) > size * 0.2 ||
@@ -465,14 +957,22 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
         ));
     if (preserve) {
       for (let pass = 0; pass < page.items.length + 1; pass++) {
-        const overlapping = blocks.filter((block) => intersects(rect, block.rect, 0.2));
+        const entry = semantic === 'toc' || semantic === 'index';
+        const centered = (box: Rect) =>
+          box.x + box.width / 2 >= rect.x &&
+          box.x + box.width / 2 <= rect.x + rect.width &&
+          box.y + box.height / 2 >= rect.y &&
+          box.y + box.height / 2 <= rect.y + rect.height;
+        const overlapping = blocks.filter((block) =>
+          entry ? centered(block.rect) : intersects(rect, block.rect, 0.2),
+        );
         for (const block of overlapping) {
           blocks.splice(blocks.indexOf(block), 1);
           for (const id of block.sourceIds) claimed.delete(id);
           rect = union([rect, block.rect]);
         }
         const included = page.items.filter(
-          (item) => !claimed.has(item.id) && intersects(rect, item, 0.2),
+          (item) => !claimed.has(item.id) && (entry ? centered(item) : intersects(rect, item, 0.2)),
         );
         const graphics = page.graphicRegions.filter((region) => intersects(rect, region, 0));
         const expanded = clampRect(
@@ -493,10 +993,33 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
     }
     const block = makeBlock(page, free, semantic, preserve, key);
     if (preserve) block.rect = rect;
+    if (preserve && (semantic === 'toc' || semantic === 'index')) {
+      const last = tableRows(free).at(-1)!;
+      const own = new Set(free.map((item) => item.id));
+      const nextTop = Math.min(
+        ...page.items
+          .filter(
+            (item) =>
+              !own.has(item.id) &&
+              item.y > last.y + last.size * 0.6 &&
+              item.fontSize >= last.size * 0.75 &&
+              item.x < rect.x + rect.width &&
+              item.x + item.width > rect.x,
+          )
+          .map((item) => item.y),
+      );
+      // Some PDF fonts expose boxes taller than their baseline spacing. Keep
+      // owned descenders, while excluding the next entry's unrelated ink.
+      const descenders = Math.max(
+        ...free.map((item) => (item.baselineY ?? item.y + item.fontSize) + item.fontSize * 0.2),
+      );
+      const bottom = Math.max(nextTop, descenders);
+      if (bottom < rect.y + rect.height) block.rect = { ...rect, height: bottom - rect.y };
+    }
     blocks.push(block);
     free.forEach((item) => claimed.add(item.id));
   };
-  const addTable = (entries: SourceText[], key: string, tagged = true) => {
+  const addTable = (entries: SourceText[], key: string, tagged = true, bounds?: Rect) => {
     const free = [...new Map(entries.map((item) => [item.id, item])).values()].filter(
       (item) => !claimed.has(item.id),
     );
@@ -504,13 +1027,17 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
     if (!free.length || free.length !== new Set(entries.map((item) => item.id)).size) return;
     const cellRect = union(free),
       padding = Math.max(3, median(free.map((item) => item.fontSize)) * 2);
-    const graphics = page.graphicRegions.filter(
-      (region) =>
-        region.x >= cellRect.x - padding &&
-        region.y >= cellRect.y - padding &&
-        region.x + region.width <= cellRect.x + cellRect.width + padding &&
-        region.y + region.height <= cellRect.y + cellRect.height + padding &&
-        intersects(region, cellRect, padding),
+    const graphics = page.graphicRegions.filter((region) =>
+      bounds
+        ? region.x >= bounds.x - 1 &&
+          region.y >= bounds.y - 1 &&
+          region.x + region.width <= bounds.x + bounds.width + 1 &&
+          region.y + region.height <= bounds.y + bounds.height + 1
+        : region.x >= cellRect.x - padding &&
+          region.y >= cellRect.y - padding &&
+          region.x + region.width <= cellRect.x + cellRect.width + padding &&
+          region.y + region.height <= cellRect.y + cellRect.height + padding &&
+          intersects(region, cellRect, padding),
     );
     const inside = (item: SourceText) =>
       item.x + item.width / 2 >= cellRect.x &&
@@ -525,14 +1052,15 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
     const owned = ordered.flatMap((row) => row.items);
     const ownedIds = new Set(owned.map((item) => item.id));
     const contentRect = union(owned),
-      edge = Math.min(3, padding / 3);
+      edge = Math.min(3, padding / 3),
+      sidePadding = bounds ? Math.min(3, padding) : padding;
     const padded = {
-      x: contentRect.x - padding,
+      x: contentRect.x - sidePadding,
       y: contentRect.y - edge,
-      width: contentRect.width + padding * 2,
+      width: contentRect.width + sidePadding * 2,
       height: contentRect.height + edge * 2,
     };
-    const envelope = union([padded, ...graphics]);
+    const envelope = union([padded, ...graphics, ...(bounds ? [bounds] : [])]);
     let left = envelope.x,
       top = envelope.y,
       right = envelope.x + envelope.width,
@@ -655,7 +1183,9 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
     } else add(entries, semantic, true, group.id);
   }
   for (const entry of ruledTableEntries(page, claimed, bodySize))
-    addTable(entry.items, entry.id, false);
+    addTable(entry.items, entry.id, false, entry.bounds);
+  for (const entry of uncaptionedTableEntries(page, claimed, bodySize))
+    addTable(entry.items, entry.id, false, entry.bounds);
   for (const entry of codeBlockEntries(page, claimed)) {
     blocks.push({
       id: `p${page.number}:code:${entry.id}`,
@@ -680,9 +1210,17 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
   const tocHeading = headings.find((row) => contentsHeading.test(row.text)),
     idxHeading = headings.find((row) => indexHeading.test(row.text)),
     noteHeading = headings.find((row) => notesHeading.test(row.text));
-  const candidates = allRows.filter(
-    (row) => !row.items.some((item) => claimed.has(item.id)) && !headings.includes(row),
+  const entryItems = page.items.filter(
+    (item) => !claimed.has(item.id) && !headings.some((heading) => heading.items.includes(item)),
   );
+  const columns =
+    tocHeading || idxHeading
+      ? entryColumns(
+          entryItems.filter((item) => item.y > (tocHeading?.y ?? idxHeading!.y)),
+          page.width,
+        )
+      : [entryItems];
+  const candidates = columns.flatMap(rows);
   const marginNumberIds = new Set(
     detectLineNumbers(page, claimed, bodySize).map((entry) => entry.item.id),
   );
@@ -715,8 +1253,9 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
         row.items.at(-1)!.y + row.items.at(-1)!.height / 2 >=
           row.items.at(-2)!.y + row.items.at(-2)!.height * 0.25 &&
         pageNumber.test(row.items.at(-1)!.text.trim()) &&
-        row.items.at(-1)!.x > page.width * 0.65 &&
-        row.items.at(-1)!.x - (row.items.at(-2)!.x + row.items.at(-2)!.width) > bodySize * 2 &&
+        (tocHeading || row.items.at(-1)!.x > page.width * 0.65) &&
+        row.items.at(-1)!.x - (row.items.at(-2)!.x + row.items.at(-2)!.width) >
+          bodySize * (tocHeading ? 0.3 : 2) &&
         /\p{L}{3}/u.test(
           row.items
             .slice(0, -1)
@@ -746,7 +1285,7 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
       (row) =>
         row.y > idxHeading.y &&
         /(?:\d+(?:\s*[,–—-]\s*\d+)*)\s*$/u.test(row.text) &&
-        /\p{L}/u.test(row.text),
+        (/\p{L}/u.test(row.text) || pageNumber.test(row.text.trim())),
     );
     const indexEndings = new Set(indexRows);
     for (const row of indexRows)
@@ -779,6 +1318,8 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
       inNotes = Boolean(noteHeading && first.y > noteHeading.y);
     if (!noteLabel || (!inNotes && !(first.y > page.height * 0.73 && first.size < bodySize * 0.94)))
       continue;
+    // Bare numeric tick rows near the page bottom are not explanatory footnotes.
+    if (!inNotes && !/\p{L}{2}/u.test(first.text)) continue;
     if (/\b(?:19|20)\d{2}\b|doi|https?:/iu.test(first.text) && !inNotes) continue;
     const entries = [...first.items];
     let previous = first;

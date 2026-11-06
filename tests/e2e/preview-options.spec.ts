@@ -91,6 +91,78 @@ const jobs = (page: Page) => page.evaluate(() => window.previewWorkers.jobs);
 const release = (page: Page, id: number) =>
   page.evaluate((job) => window.previewWorkers.release(job), id);
 
+test('automatic figure rotation defaults on, cancels older previews, and resets to on', async ({
+  page,
+}) => {
+  await holdConversions(page);
+  await page.goto('');
+  const section = page.getByRole('region', { name: '자동조정', exact: true });
+  const rotation = section.getByRole('checkbox', { name: '큰 표·그림 자동 회전', exact: true });
+  await expect(rotation).toBeChecked();
+  await page
+    .locator('#pdf-file-input')
+    .setInputFiles(resolve('.cache/fixtures/mixed-document.pdf'));
+  await expect.poll(async () => (await jobs(page)).length, { timeout: 60_000 }).toBe(1);
+  const initial = (await jobs(page))[0];
+  expect(initial.config.autoRotateFigures).toBe(true);
+
+  await rotation.uncheck();
+  expect((await jobs(page)).find((job) => job.id === initial.id)?.terminated).toBe(true);
+  await expect.poll(async () => (await jobs(page)).at(-1)?.config.autoRotateFigures).toBe(false);
+  const optedOut = (await jobs(page)).at(-1)!;
+  await expect(rotation).not.toBeChecked();
+  await expect(rotation).toBeEnabled();
+
+  await page.getByRole('button', { name: '기본 설정으로', exact: true }).click();
+  await expect(rotation).toBeChecked();
+  expect((await jobs(page)).find((job) => job.id === optedOut.id)?.terminated).toBe(true);
+  await expect
+    .poll(async () => {
+      const current = (await jobs(page)).at(-1)!;
+      return [current.id !== optedOut.id, current.config.autoRotateFigures];
+    })
+    .toEqual([true, true]);
+  const latest = (await jobs(page)).at(-1)!;
+  expect(await release(page, initial.id)).toBe(false);
+  expect(await release(page, optedOut.id)).toBe(false);
+  expect(await release(page, latest.id)).toBe(true);
+  await expect(page.locator('[data-scope]')).toHaveAttribute('data-scope', 'preview', {
+    timeout: 60_000,
+  });
+  expect(
+    (await jobs(page)).find((job) => job.id === latest.id)?.resultConfig?.autoRotateFigures,
+  ).toBe(true);
+  await expect(page.locator('.error-message')).toHaveCount(0);
+});
+
+test('line spacing uses a percentage that stays fixed when font size changes', async ({ page }) => {
+  await page.goto('');
+  const spacing = page.getByRole('spinbutton', { name: '줄간격', exact: true });
+  const fontSize = page.getByRole('spinbutton', { name: '글자 크기', exact: true });
+  await expect(spacing.locator('..')).toHaveText('%');
+  await expect(spacing).toHaveValue('160');
+  await expect(spacing).toHaveAttribute('step', '10');
+  await expect(fontSize).toHaveAttribute('step', '0.5');
+  await expect(page.getByRole('spinbutton', { name: '가로', exact: true })).toHaveAttribute(
+    'step',
+    '0.1',
+  );
+  await expect(page.getByRole('spinbutton', { name: '세로', exact: true })).toHaveAttribute(
+    'step',
+    '0.1',
+  );
+  for (const label of ['위 여백', '아래 여백', '왼쪽 여백', '오른쪽 여백', '문단 간격'])
+    await expect(page.getByRole('spinbutton', { name: label, exact: true })).toHaveAttribute(
+      'step',
+      '1',
+    );
+  await spacing.fill('150');
+  await fontSize.fill('20');
+  await expect(spacing).toHaveValue('150');
+  await expect(fontSize).toHaveValue('20');
+  await expect(page.locator('.error-message')).toHaveCount(0);
+});
+
 test('editing margins cancels active previews and keeps only the latest settings', async ({
   page,
 }) => {

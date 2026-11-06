@@ -13,6 +13,8 @@ interface CodeRow extends Rect {
   size: number;
   baseline: number;
   eligible: boolean;
+  numbered: boolean;
+  monospaced: boolean;
 }
 const monospace = /mono|courier|consolas|menlo|inconsolata|source\s*code|liberation\s*mono/iu;
 const codeWord =
@@ -103,15 +105,19 @@ export function codeBlockEntries(
             item.y + item.height / 2 < region.y + region.height,
         ),
       );
+      const text = rowText(items, characterAdvance(items)),
+        numbered = /^\s*\d{1,4}\s+\S/u.test(text),
+        monospaced = mono.length > 0 && !ordinaryLetters;
       rows.push({
         ...union(items),
         items,
         size,
         baseline: baseline(items[0]),
-        text: rowText(items, characterAdvance(items)),
+        text,
+        numbered,
+        monospaced,
         eligible:
-          mono.length > 0 &&
-          !ordinaryLetters &&
+          (monospaced || numbered) &&
           !inDiagram &&
           items.every(
             (item) =>
@@ -157,6 +163,24 @@ export function codeBlockEntries(
   }
   return groups.flatMap((lines) => {
     if (lines.length < 2) return [];
+    if (lines.some((line) => !line.monospaced)) {
+      const numbers = lines.map((line) => Number(/^\s*(\d+)\s/u.exec(line.text)?.[1]));
+      const declaration = lines.some((line) =>
+        /^\s*\d+\s+(?:partial\s+)?(?:connector|model|function|class|def|extends|parameter|flow)\b/iu.test(
+          line.text,
+        ),
+      );
+      if (
+        lines.length < 4 ||
+        !lines.every((line) => line.numbered) ||
+        numbers.some(
+          (number, index) =>
+            !Number.isInteger(number) || (index > 0 && number !== numbers[index - 1] + 1),
+        ) ||
+        !declaration
+      )
+        return [];
+    }
     const syntaxLines = lines.filter((line) => syntax(line.text));
     const numericOutput =
       lines.length >= 3 &&

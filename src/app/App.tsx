@@ -31,7 +31,7 @@ import {
   IPadAirPresetIcon,
 } from '../components/TabletPresetIcons';
 
-type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme'>;
+type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme' | 'autoRotateFigures'>;
 type Preset = (typeof PRESETS)[number];
 const presetIcons = {
   fold: Fold7PresetIcon,
@@ -438,12 +438,12 @@ function App() {
           <input
             type="number"
             value={Number.isFinite(displayed) ? displayed : ''}
-            min="0"
+            min={key === 'lineHeightPercent' ? 100 : 0}
             step={step}
             aria-label={label}
             onChange={(event) => changeNumber(key, event.target.value, dimensions)}
           />
-          <span>{dimensions ? unit : 'pt'}</span>
+          <span>{key === 'lineHeightPercent' ? '%' : dimensions ? unit : 'pt'}</span>
         </div>
       </label>
     );
@@ -499,7 +499,7 @@ function App() {
               </div>
             </div>
             <div className="field-pair page-size-fields">
-              {numberField('pageWidthPt', '가로', true, 0.1)}
+              {numberField('pageWidthPt', '가로', true, unit === 'mm' ? 0.1 : 1)}
               <button
                 className="icon-button swap-dimensions-button"
                 aria-label="가로·세로 바꾸기"
@@ -508,7 +508,7 @@ function App() {
               >
                 <Icon name="swap" size={18} />
               </button>
-              {numberField('pageHeightPt', '세로', true, 0.1)}
+              {numberField('pageHeightPt', '세로', true, unit === 'mm' ? 0.1 : 1)}
             </div>
             <p className="preset-label">preset</p>
             <div className="preset-grid">
@@ -577,19 +577,34 @@ function App() {
               </button>
             </div>
             <div className="field-pair">
-              {numberField('fontSizePt', '글자 크기', false, 0.1)}
-              {numberField('lineHeightPt', '행간', false, 0.1)}
+              {numberField('fontSizePt', '글자 크기', false, 0.5)}
+              {numberField('lineHeightPercent', '줄간격', false, 10)}
             </div>
             <div className="margin-settings">
               <p className="margin-settings-label">여백과 문단</p>
               <div className="field-pair">
-                {numberField('marginTopPt', '위 여백', true, 0.1)}
-                {numberField('marginBottomPt', '아래 여백', true, 0.1)}
-                {numberField('marginLeftPt', '왼쪽 여백', true, 0.1)}
-                {numberField('marginRightPt', '오른쪽 여백', true, 0.1)}
-                {numberField('paragraphGapPt', '문단 간격', false, 0.1)}
+                {numberField('marginTopPt', '위 여백', true)}
+                {numberField('marginBottomPt', '아래 여백', true)}
+                {numberField('marginLeftPt', '왼쪽 여백', true)}
+                {numberField('marginRightPt', '오른쪽 여백', true)}
+                {numberField('paragraphGapPt', '문단 간격')}
               </div>
             </div>
+          </section>
+          <section className="settings-section" aria-labelledby="auto-adjust-heading">
+            <div className="section-label">
+              <h2 id="auto-adjust-heading">자동조정</h2>
+            </div>
+            <label className="automatic-option">
+              <input
+                type="checkbox"
+                checked={config.autoRotateFigures}
+                onChange={(event) =>
+                  changeConfig({ ...config, autoRotateFigures: event.target.checked })
+                }
+              />
+              <span>큰 표·그림 자동 회전</span>
+            </label>
           </section>
           <button className="text-button reset-button" onClick={resetConfig}>
             <Icon name="refresh" size={14} />

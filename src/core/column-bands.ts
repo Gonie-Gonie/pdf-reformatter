@@ -73,6 +73,24 @@ function supportsGutter(rows: Row[], index: number, gutter: number, width: numbe
   );
 }
 
+function stillSeparatesProse(items: SourceText[], gutter: number, width: number): boolean {
+  const rows = rowsFor(items);
+  if (rows.some((row) => crossesGutter(row, gutter))) return false;
+  return ['left', 'right'].every(
+    (side) =>
+      rows.filter((row) => {
+        const selected = row.items.filter((item) => item.x < gutter === (side === 'left'));
+        return (
+          selected.reduce((count, item) => count + (item.text.match(/\p{L}/gu)?.length ?? 0), 0) >=
+            8 &&
+          Math.max(...selected.map((item) => item.x + item.width)) -
+            Math.min(...selected.map((item) => item.x)) >=
+            width * 0.08
+        );
+      }).length >= 2,
+  );
+}
+
 /** Repeated local whitespace can change below a wide summary or beside a sidebar. */
 function localTransitions(
   page: SourcePage,
@@ -87,14 +105,14 @@ function localTransitions(
     const selected = window.flatMap((row) => row.items);
     let gutter = findColumnGutter(selected, page.width);
     if (gutter === undefined) continue;
-    // Indented headings can move a local estimate to the edge of the next
-    // column. Reuse the stronger page estimate only while it remains a real
-    // gap throughout this window; a summary or genuinely shifted column
-    // crosses that gap and keeps its own local boundary.
+    // Indentation can move a local estimate toward the next column. Reuse the
+    // stronger page estimate only when this window still proves the same
+    // completely clear strip with repeated prose on both sides. A summary or
+    // genuinely shifted column crosses it and retains its own local boundary.
     if (
       pageGutter !== undefined &&
-      Math.abs(gutter - pageGutter) <= rows[start].size * 1.6 &&
-      window.every((row) => !crossesGutter(row, pageGutter))
+      window.every((row) => !crossesGutter(row, pageGutter)) &&
+      stillSeparatesProse(selected, pageGutter, page.width)
     )
       gutter = pageGutter;
     const previous = groups.at(-1);
@@ -118,6 +136,17 @@ function localTransitions(
       if (crossesGutter(rows[index], group.gutter)) first = index + 1;
     while (first < group.end && !supportsGutter(rows, first, group.gutter, page.width)) first++;
     if (first >= rows.length || first >= group.end) continue;
+    // A sidebar can begin with artwork before its first text baseline. Once
+    // both prose columns prove the strip, include the preceding one-sided rows
+    // back to the last genuinely spanning row instead of splitting the main
+    // paragraph where the sidebar's metadata first happens to appear.
+    while (
+      first > 0 &&
+      !crossesGutter(rows[first - 1], group.gutter) &&
+      rows[first].center - rows[first - 1].center <=
+        Math.max(rows[first].size, rows[first - 1].size) * 2.5
+    )
+      first--;
     const top = Math.min(...rows[first].items.map((item) => item.y));
     if (!result.length) {
       const wideRows = rows.slice(0, first).filter((row) => crossesGutter(row, group.gutter));
@@ -141,13 +170,22 @@ export function persistentColumnBands(
   if (initial)
     return initial.map((band) => {
       const selected = items.filter((item) => item.y >= band.top && item.y < band.bottom);
+      const inferred = findColumnGutter(selected, page.width, page.graphicRegions);
+      const gutter =
+        inferred ??
+        (band.gutter !== undefined && stillSeparatesProse(selected, band.gutter, page.width)
+          ? band.gutter
+          : undefined);
       return {
         top: band.top,
         bottom: band.bottom,
         items: selected,
         // Preserve transition boundaries, not whitespace belonging to a table
         // or chart whose labels have since been claimed by a source region.
-        gutter: findColumnGutter(selected, page.width, page.graphicRegions),
+        // A smaller sidebar font can fall below the body-size filter after
+        // narrowing to this band. Retain its proven boundary only if repeated
+        // prose remains on both sides of a completely clear strip.
+        gutter,
       };
     });
   const boundaries = [-Infinity, ...cuts, Infinity];

@@ -17,9 +17,11 @@ export function textGeometry(
   const vertical = verticalScale
     ? [transform[2] / verticalScale, transform[3] / verticalScale]
     : [baseline[1], -baseline[0]];
-  // Missing PDF font boxes can surface as NaN or a zero-height 0/0 pair.
+  // Broken font boxes can also report zero/negative ascents for ordinary glyphs.
+  // Masking those runs below the baseline leaves their visible ink in figure detection.
   // Normalize the pair before multiplication: even 0 * NaN corrupts x coordinates.
-  const validMetrics = Number.isFinite(ascent) && Number.isFinite(descent) && ascent > descent;
+  const validMetrics =
+    Number.isFinite(ascent) && Number.isFinite(descent) && ascent > 0 && ascent > descent;
   const fontAscent = validMetrics ? ascent : 0.85;
   const fontDescent = validMetrics ? descent : -0.2;
   const top = fontSize * fontAscent;

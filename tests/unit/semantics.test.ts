@@ -71,6 +71,48 @@ function owned(reading: ReadingDocument, source: SourceDocument) {
 }
 
 describe('semantic PDF analysis', () => {
+  it('does not draw a second composite image over several already-preserved tagged tables', () => {
+    const cells = [0, 1, 2].flatMap((table) =>
+      [0, 1, 2].map((row) =>
+        item(
+          `t${table}-${row}`,
+          `Table cell ${table} row ${row}`,
+          50,
+          100 + table * 50 + row * 12,
+          300,
+          10,
+        ),
+      ),
+    );
+    const original = page(
+      cells,
+      1,
+      [0, 1, 2].map((index) =>
+        group(
+          `table-${index}`,
+          'Table',
+          cells.filter((cell) => cell.id.startsWith(`t${index}-`)).map((cell) => cell.id),
+          index,
+        ),
+      ),
+    );
+    original.graphicRegions = [{ x: 50, y: 100, width: 300, height: 134 }];
+    const reading = analyzeDocument(document([original]));
+    expect(reading.blocks.filter((block) => block.semantic === 'table')).toHaveLength(3);
+    expect(
+      reading.blocks.filter((block) => block.kind === 'sourceRegion' && block.semantic !== 'table'),
+    ).toHaveLength(0);
+    owned(reading, document([original]));
+    original.graphicRegions = [{ x: 50, y: 100, width: 500, height: 134 }];
+    const withDiagram = analyzeDocument(document([original]));
+    expect(
+      withDiagram.blocks.some(
+        (block) =>
+          block.kind === 'sourceRegion' && block.semantic !== 'table' && block.rect.width > 300,
+      ),
+    ).toBe(true);
+  });
+
   it('preserves tagged table cells and rules without absorbing its caption or following prose', () => {
     const cells = [
       item('head-left', 'Model', 48, 100, 120),
@@ -242,6 +284,256 @@ describe('semantic PDF analysis', () => {
       ).toBe(false);
     },
   );
+
+  it('uses a centered table’s own rules when it crosses the page gutter', () => {
+    const cells = Array.from({ length: 4 }, (_, index) => [
+      item(`center-left-${index}`, `Category ${index}`, 170, 110 + index * 18, 55, 8),
+      item(`center-right-${index}`, `Options ${index}`, 240, 110 + index * 18, 170, 8),
+    ]).flat();
+    const original = page([
+      item('body', 'Ordinary body text establishes a larger font.', 48, 30, 500, 10),
+      item('caption', 'Table 2', 165, 70, 40, 9),
+      item('description', 'Categories and possible options.', 165, 84, 250, 9),
+      ...cells,
+      item('after', 'The body resumes below the complete centered table.', 48, 210, 500, 10),
+    ]);
+    original.graphicRegions = [104, 176].map((y) => ({ x: 160, y, width: 275, height: 2 }));
+    const result = analyzePageSemantics(original);
+    const table = result.blocks.find((block) => block.semantic === 'table')!;
+    expect(table).toBeDefined();
+    expect(table.sourceIds.sort()).toEqual(cells.map((entry) => entry.id).sort());
+    expect(table.rect.x).toBeLessThanOrEqual(160);
+    expect(table.rect.x + table.rect.width).toBeGreaterThanOrEqual(435);
+    expect(result.lineNumbers).toHaveLength(0);
+    owned(analyzeDocument(document([original])), document([original]));
+  });
+
+  it('recognizes tight cell columns when a producer emits each prose word separately', () => {
+    const cells = Array.from({ length: 4 }, (_, index) => [
+      item(`label-${index}`, `Label ${index}`, 48, 110 + index * 18, 34, 7),
+      item(`first-word-${index}`, 'Ordinary', 90, 110 + index * 18, 28, 7),
+      item(`second-word-${index}`, 'cell', 120, 110 + index * 18, 12, 7),
+      item(`third-word-${index}`, 'description', 134, 110 + index * 18, 38, 7),
+    ]).flat();
+    const original = page([
+      item('body', 'A paragraph in the larger ordinary body font.', 48, 30, 500, 12),
+      item('caption', 'Table 1', 48, 70, 40, 10),
+      ...cells,
+      item('after', 'Following prose is outside the table.', 48, 210, 500, 12),
+    ]);
+    original.graphicRegions = [104, 176].map((y) => ({ x: 45, y, width: 510, height: 2 }));
+    const table = analyzePageSemantics(original).blocks.find(
+      (block) => block.semantic === 'table',
+    )!;
+    expect(table).toBeDefined();
+    expect(table.sourceIds.sort()).toEqual(cells.map((entry) => entry.id).sort());
+    expect(table.sourceIds).not.toContain('after');
+  });
+
+  it.each(['Table 1.', 'TABLE II.'])(
+    'keeps a dense matrix with an inline or continued caption %s instead of extracting line numbers',
+    (caption) => {
+      const cells = Array.from({ length: 8 }, (_, row) =>
+        Array.from({ length: 6 }, (_, column) =>
+          item(
+            `matrix-${row}-${column}`,
+            column ? `v${row + column}` : `${row + 1}`,
+            50 + column * 82,
+            112 + row * 14,
+            20,
+            9,
+          ),
+        ),
+      ).flat();
+      const original = page([
+        item('body', 'This paragraph uses the same size as the table cells.', 48, 30, 500, 9),
+        item('caption', caption, 166, 80, 36, 9),
+        item('description', 'Cont.', 205, 80, 30, 9),
+        ...cells,
+        item('after', 'Ordinary prose resumes after the closing table rule.', 48, 260, 500, 9),
+      ]);
+      original.graphicRegions = [
+        { x: 35, y: 104, width: 525, height: 38 },
+        { x: 35, y: 222, width: 525, height: 2 },
+      ];
+      const semantic = analyzePageSemantics(original);
+      const table = semantic.blocks.find((block) => block.semantic === 'table')!;
+      expect(table).toBeDefined();
+      expect(table.sourceIds.sort()).toEqual(cells.map((entry) => entry.id).sort());
+      expect(semantic.lineNumbers).toHaveLength(0);
+      expect(table.sourceIds).not.toEqual(
+        expect.arrayContaining(['caption', 'description', 'after']),
+      );
+      owned(analyzeDocument(document([original])), document([original]));
+    },
+  );
+
+  it('keeps a table whose closing rule was split around masked cell text', () => {
+    const cells = [0, 1, 2, 3].flatMap((index) => [
+      item(`split-left-${index}`, `Category ${index}`, 48, 100 + index * 18, 120, 8),
+      item(`split-right-${index}`, `Description ${index}`, 330, 100 + index * 18, 220, 8),
+    ]);
+    const original = page([
+      item('caption', 'Table 3. Categories and definitions.', 48, 70, 300, 10),
+      ...cells,
+      item(
+        'after',
+        'The independent prose remains below the closing table rule.',
+        48,
+        210,
+        500,
+        12,
+      ),
+    ]);
+    original.graphicRegions = [
+      { x: 45, y: 96, width: 510, height: 2 },
+      { x: 110, y: 172, width: 100, height: 2 },
+      { x: 420, y: 172, width: 110, height: 2 },
+    ];
+    const table = analyzePageSemantics(original).blocks.find(
+      (block) => block.semantic === 'table',
+    )!;
+    expect(table).toBeDefined();
+    expect(table.sourceIds.sort()).toEqual(cells.map((entry) => entry.id).sort());
+    expect(table.rect.y + table.rect.height).toBeGreaterThanOrEqual(174);
+    expect(table.sourceIds).not.toContain('after');
+  });
+
+  it('keeps superscript heading units with the full ruled table instead of inventing contents rows', () => {
+    const heading = [
+      { ...item('unit-a', '3', 180, 96, 3, 6.1), baselineY: 100 },
+      { ...item('unit-b', '3', 290, 96, 3, 6.1), baselineY: 100 },
+      { ...item('head-a', 'Volume (m /hr)', 160, 97, 70, 8), baselineY: 102.9 },
+      { ...item('head-b', 'Capacity (m )', 270, 97, 70, 8), baselineY: 102.9 },
+      { ...item('head-c', 'Number', 480, 97, 45, 8), baselineY: 102.9 },
+    ];
+    const cells = [0, 1, 2, 3].flatMap((row) => [
+      item(`unit-value-${row}`, `${row + 1}.5`, 160, 114 + row * 10, 20, 8),
+      item(`description-${row}`, `Room layout ${row + 1}`, 270, 114 + row * 10, 65, 8),
+      item(`count-${row}`, `${row + 10}`, 500, 114 + row * 10, 15, 8),
+    ]);
+    const original = page([
+      item('caption', 'Table 1. Measured room properties.', 160, 75, 300, 9.5),
+      ...heading,
+      ...cells,
+      item('following', 'The independent body paragraph follows the closing rule.', 48, 190, 500),
+    ]);
+    original.graphicRegions = [
+      { x: 155, y: 90, width: 380, height: 20 },
+      { x: 155, y: 156, width: 380, height: 3 },
+    ];
+    const result = analyzePageSemantics(original),
+      table = result.blocks.find((block) => block.semantic === 'table')!;
+    expect(table).toBeDefined();
+    expect(table.sourceIds.sort()).toEqual([...heading, ...cells].map((entry) => entry.id).sort());
+    expect(table.rect.y).toBeLessThanOrEqual(90);
+    expect(table.rect.y + table.rect.height).toBeGreaterThanOrEqual(159);
+    expect(result.blocks.some((block) => block.semantic === 'toc')).toBe(false);
+    expect(table.sourceIds).not.toContain('following');
+    owned(analyzeDocument(document([original])), document([original]));
+  });
+
+  it.each(['masked rules', 'missing header ink', 'short closing rule'])(
+    'requires a dense stable matrix and both surviving rule edges: %s',
+    (variant) => {
+      const cells = Array.from({ length: 7 }, (_, row) =>
+        Array.from({ length: 5 }, (_, column) =>
+          item(
+            `masked-${row}-${column}`,
+            row ? `${row + column}.5` : `Metric ${column}`,
+            44 + column * 48,
+            100 + row * 12,
+            row ? 18 : column === 4 ? 47 : 35,
+            6.3,
+          ),
+        ),
+      ).flat();
+      const original = page([
+        item('caption', 'Table 4', 38, 65, 28, 7.1),
+        item('description', 'Accuracies and operational values.', 38, 78, 240, 7.1),
+        ...cells,
+        item('following', 'Following body prose remains independent.', 38, 210, 250, 8),
+        item(
+          'neighbor',
+          'Ordinary prose in the other column is not part of the table.',
+          310,
+          100,
+          250,
+          8,
+        ),
+      ]);
+      original.graphicRegions = [
+        ...(variant === 'missing header ink' ? [] : [{ x: 70, y: 103, width: 18, height: 3 }]),
+        { x: 60, y: 178, width: 60, height: 3 },
+        ...(variant === 'short closing rule'
+          ? []
+          : [
+              { x: 140, y: 178, width: 80, height: 3 },
+              { x: 248, y: 178, width: 40, height: 3 },
+            ]),
+      ];
+      const result = analyzePageSemantics(original),
+        table = result.blocks.find((block) => block.semantic === 'table');
+      if (variant !== 'masked rules') {
+        expect(table).toBeUndefined();
+        return;
+      }
+      expect(table).toBeDefined();
+      expect(table!.sourceIds.sort()).toEqual(cells.map((entry) => entry.id).sort());
+      expect(table!.rect.y).toBeLessThan(100);
+      expect(table!.rect.y + table!.rect.height).toBeGreaterThanOrEqual(181);
+      expect(table!.sourceIds).not.toEqual(expect.arrayContaining(['neighbor', 'following']));
+      owned(analyzeDocument(document([original])), document([original]));
+    },
+  );
+
+  it('keeps ruled-table padding out of a neighboring prose column and preserves column order', () => {
+    const cells = [0, 1, 2].flatMap((row) => [
+      item(`narrow-left-${row}`, `Value ${row}`, 60, 110 + row * 18, 40, 8),
+      item(`narrow-right-${row}`, `Result ${row}`, 240, 110 + row * 18, 51, 8),
+    ]);
+    const following = [0, 1, 2, 3].map((row) =>
+      item(
+        `left-prose-${row}`,
+        `Left article paragraph continues through row ${row}.`,
+        60,
+        180 + row * 14,
+        236,
+        10,
+      ),
+    );
+    const right = Array.from({ length: 9 }, (_, row) =>
+      item(
+        `right-prose-${row}`,
+        row
+          ? `The right paragraph continues through row ${row}.`
+          : 'Figure 6 illustrates the updated design in the right paragraph.',
+        314,
+        102 + row * 14,
+        236,
+        10,
+      ),
+    );
+    const original = page([
+      item('caption', 'Table 7.', 60, 80, 38, 10),
+      item('title', 'Compact result values.', 102, 80, 150, 10),
+      ...cells,
+      ...following,
+      ...right,
+    ]);
+    original.graphicRegions = [104, 160].map((y) => ({ x: 58, y, width: 240, height: 2 }));
+    const source = document([original]);
+    const reading = analyzeDocument(source);
+    const table = reading.blocks.find((block) => block.semantic === 'table')!;
+    expect(table).toBeDefined();
+    expect(table.rect.x + table.rect.width).toBe(298);
+    const order = reading.blocks.flatMap((block) => block.sourceIds);
+    expect(order.indexOf('left-prose-3')).toBeLessThan(order.indexOf('right-prose-0'));
+    expect(reading.blocks.indexOf(table)).toBeLessThan(
+      reading.blocks.findIndex((block) => block.sourceIds.includes('right-prose-0')),
+    );
+    owned(reading, source);
+  });
 
   it.each(['Contents', 'Index'])(
     'keeps an untagged multiline %s entry with its reference numbers',

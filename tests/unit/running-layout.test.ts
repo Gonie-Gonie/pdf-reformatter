@@ -12,7 +12,7 @@ const config: LayoutConfig = {
   marginLeftPt: 12,
   marginRightPt: 12,
   fontSizePt: 12,
-  lineHeightPt: 20,
+  lineHeightPercent: (20 / 12) * 100,
 };
 const measure = (text: string, size: number) => [...text].length * size * 0.5;
 

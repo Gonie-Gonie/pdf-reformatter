@@ -78,6 +78,175 @@ function bookPage(number: number, title = 'Chapter one'): SourcePage {
 }
 
 describe('running headers and footers', () => {
+  it('recognizes consistent larger header folios above compact table text', () => {
+    const pages = [1, 2, 3].map((number) => ({
+      ...page(number),
+      items: [
+        ...page(number).items.map((item) => ({ ...item, fontSize: 7.5, height: 7.5 })),
+        item(`folio-${number}`, String(number + 20), 42, 28, 12, 10),
+        item(`title-${number}`, 'CHAPTER 1 DESIGN PROCESS', 70, 30, 180, 7.5),
+      ],
+    }));
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3]) {
+      expect(running.get(number)?.pageNumberIds).toEqual([`folio-${number}`]);
+      expect(running.get(number)?.headerIds).toEqual([`title-${number}`]);
+    }
+  });
+
+  it('recognizes repeated edge chapter tabs while retaining nearby plot axis labels', () => {
+    const pages = [1, 2, 3, 4, 5, 6, 7].map((number) => {
+      const tab = {
+        ...item(`tab-${number}`, 'THERMAL CONTROL', 4, 100, 10, 12),
+        height: 100,
+        rotation: -90,
+        preserve: true,
+      };
+      const axis = { ...tab, id: `axis-${number}`, y: 400 };
+      const original = number === 7 ? page(number) : bookPage(number);
+      return {
+        ...original,
+        items: [...original.items, tab, axis],
+        graphicRegions: [{ x: 20, y: 380, width: 250, height: 150 }],
+      };
+    });
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3, 4, 5, 6, 7])
+      expect(running.get(number)?.footerIds).toEqual([`tab-${number}`]);
+  });
+
+  it('recognizes a compact repeated access footer with varying creation timestamps', () => {
+    const pages = [1, 2, 3].map((number) =>
+      page(number, [
+        item(
+          `citation-${number}`,
+          'Author. A scientific book. Publisher Ebook Library.',
+          10,
+          764,
+          310,
+          6,
+        ),
+        item(`url-${number}`, 'https://library.example.com/books/detail?id=12345', 25, 771, 250, 6),
+        item(
+          `created-${number}`,
+          `Created from the university library on 2022-07-0${number} 06:39:47.`,
+          10,
+          778,
+          240,
+          6,
+        ),
+        item(`note-${number}`, '1 This is an ordinary numbered footnote.', 50, 706, 300, 9),
+      ]),
+    );
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3])
+      expect(running.get(number)?.footerIds).toEqual([
+        `citation-${number}`,
+        `url-${number}`,
+        `created-${number}`,
+      ]);
+  });
+
+  it('separates repeated shorter copyright side marks while retaining interior axis labels', () => {
+    const pages = [1, 2, 3].map((number) => {
+      const copyright = {
+        ...item(
+          `copyright-${number}`,
+          'Copyright © 2018. Publisher. All rights reserved.',
+          4,
+          460,
+          6,
+          6,
+        ),
+        height: 190,
+        rotation: -90,
+        preserve: true,
+      };
+      return page(number, [copyright, { ...copyright, id: `axis-${number}`, x: 100 }]);
+    });
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3])
+      expect(running.get(number)?.footerIds).toEqual([`copyright-${number}`]);
+  });
+
+  it('keeps recurring vertical download marks out of prose and out of horizontal header rows', () => {
+    const pages = [1, 2, 3, 4].map((number) => {
+      const original = bookPage(number);
+      original.items.push({
+        ...item(
+          `stamp-${number}`,
+          'Downloaded from the publisher library under the applicable open access licence.',
+          585,
+          15,
+          5,
+          5,
+        ),
+        height: 770,
+        preserve: true,
+        rotation: 90,
+      });
+      return original;
+    });
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3, 4]) {
+      expect(running.get(number)?.footerIds).toEqual([`stamp-${number}`]);
+      expect(running.get(number)?.pageNumberIds).toEqual([`folio-${number}`]);
+      expect(running.get(number)?.headerIds).toEqual([`head-${number}`]);
+    }
+  });
+
+  it('recognizes a larger repeated journal wordmark beside a small running title', () => {
+    const pages = [1, 2, 3].map((number) =>
+      page(number, [
+        item(`brand-${number}`, 'PLOS ONE', 35, 30, 75, 16),
+        item(`title-${number}`, 'A repeated research article title', 350, 35, 210, 9),
+      ]),
+    );
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3])
+      expect(running.get(number)?.headerIds).toEqual([`brand-${number}`, `title-${number}`]);
+  });
+
+  it('keeps a recurring DOI footer and outer volume mark out of the body', () => {
+    const pages = [1, 2, 3].map((number) =>
+      page(number, [
+        item(`doi-${number}`, 'Journal | https://doi.org/10.1234/article', 40, 748, 360, 9),
+        item(`counter-${number}`, `${number} / 20`, 540, 748, 25, 9),
+        item(`volume-${number}`, 'Vol.:(0123456789)', 480, 778, 90, 8),
+      ]),
+    );
+    const running = detectRunningContent(document(pages));
+    for (const number of [1, 2, 3]) {
+      expect(running.get(number)?.footerIds).toEqual([`doi-${number}`, `volume-${number}`]);
+      expect(running.get(number)?.pageNumberIds).toEqual([`counter-${number}`]);
+    }
+  });
+
+  it('retains a one-off DOI in a source note', () => {
+    const result = detectRunningContent(
+      document([
+        page(1, [item('note-url', 'https://doi.org/10.1234/specific-note', 50, 750, 300)]),
+      ]),
+    );
+    expect(result.get(1)?.footerIds ?? []).not.toContain('note-url');
+  });
+
+  it('uses a proven outer footer position for a corrupt Unicode mapping', () => {
+    const pages = [1, 2, 3, 4].map((number) =>
+      page(number, [
+        item(
+          `volume-${number}`,
+          number === 1 ? '\u0019ol.:(0123456789)' : 'Vol.:(0123456789)',
+          480,
+          778,
+          90,
+          8,
+        ),
+      ]),
+    );
+    expect(detectRunningContent(document(pages)).get(1)?.footerIds).toEqual(['volume-1']);
+  });
+
   it('uses marginal Artifact evidence without treating all marked artifacts as running text', () => {
     const pages = [1, 2].map((number) =>
       page(number, [

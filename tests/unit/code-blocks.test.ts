@@ -126,6 +126,50 @@ describe('source code blocks', () => {
     ]);
     expect(codeBlockEntries(source)[0].rawText).toBe('3\n2\n1\nBlastoff!');
   });
+
+  it('preserves consecutively numbered proportional-font model code and keeps surrounding prose', () => {
+    const code = [
+      '1 partial model Element1D',
+      '2 SI.HeatFlowRate Q_flow;',
+      '3 HeatPort port_a;',
+      '4 HeatPort port_b;',
+      '5 equation',
+      '6 port_a.Q_flow = Q_flow;',
+      '7 end Element1D;',
+    ].map((text, index) => item(`model-${index}`, text, 80, 100 + index * 12, 'TimesRoman'));
+    const source = page([
+      item('before', 'The following model defines a thermal element.', 60, 75, 'TimesRoman'),
+      ...code,
+      item('after', 'The equation conserves energy through the two ports.', 60, 200, 'TimesRoman'),
+    ]);
+    const entries = codeBlockEntries(source);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].items.map((entry) => entry.id)).toEqual(code.map((entry) => entry.id));
+    expect(entries[0].rawText.split('\n')).toHaveLength(7);
+    expect(entries[0].rawText).toContain('6 port_a.Q_flow = Q_flow;');
+  });
+
+  it.each([
+    {
+      lines: [
+        '1 Collect observations.',
+        '2 Select the model.',
+        '3 Compare predictions.',
+        '4 Report errors.',
+      ],
+    },
+    { lines: ['1 x = a + b', '2 y = c + d', '3 z = x / y', '4 f(x) = z'] },
+  ])(
+    'keeps ordinary numbered prose and equation derivations out of proportional code crops',
+    ({ lines }) => {
+      const source = page(
+        lines.map((line, index) =>
+          item(`ordinary-${index}`, line, 80, 100 + index * 12, 'TimesRoman'),
+        ),
+      );
+      expect(codeBlockEntries(source)).toEqual([]);
+    },
+  );
 });
 
 describe('spaced contents leaders', () => {

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG } from '../../src/core/config';
-import { buildPageLinks } from '../../src/core/navigation';
+import { buildPageLinks, regionRectToOutput, regionRectToSource } from '../../src/core/navigation';
 import type {
   LayoutDocument,
   LayoutPage,
   ReadingBlock,
   ReadingDocument,
+  Rect,
+  RegionPlacement,
   SourceDocument,
   SourceText,
   TextPlacement,
@@ -80,7 +82,104 @@ function layout(pages: LayoutPage[]): LayoutDocument {
   return { pages, config: { ...DEFAULT_CONFIG }, warnings: [] };
 }
 
+function expectRect(actual: Rect, expected: Rect): void {
+  for (const field of ['x', 'y', 'width', 'height'] as const)
+    expect(actual[field]).toBeCloseTo(expected[field]);
+}
+
+describe('preserved object coordinate mapping', () => {
+  it.each([90, 270] as const)(
+    'maps an asymmetric landmark and a point through a %i° clockwise rotation and back',
+    (rotation) => {
+      const placement: RegionPlacement = {
+        type: 'region',
+        blockId: 'figure',
+        sourcePage: 2,
+        sourceRect: { x: 100, y: 50, width: 240, height: 120 },
+        rotation,
+        x: 20,
+        y: 30,
+        width: 180,
+        height: 480,
+      };
+      const landmark = { x: 130, y: 70, width: 50, height: 20 };
+      const output = regionRectToOutput(placement, landmark);
+      expectRect(output, {
+        x: rotation === 90 ? 140 : 50,
+        y: rotation === 90 ? 90 : 350,
+        width: 30,
+        height: 100,
+      });
+      expectRect(regionRectToSource(placement, output), landmark);
+      expectRect(regionRectToOutput(placement, placement.sourceRect), placement);
+      expectRect(regionRectToSource(placement, placement), placement.sourceRect);
+
+      const point = { x: 130, y: 70, width: 0, height: 0 };
+      const mappedPoint = regionRectToOutput(placement, point);
+      expectRect(mappedPoint, {
+        x: rotation === 90 ? 170 : 50,
+        y: rotation === 90 ? 90 : 450,
+        width: 0,
+        height: 0,
+      });
+      expectRect(regionRectToSource(placement, mappedPoint), point);
+      expect(placement.sourceRect).toEqual({ x: 100, y: 50, width: 240, height: 120 });
+    },
+  );
+
+  it('retains linear scaling when the object has no rotation', () => {
+    const placement: RegionPlacement = {
+      type: 'region',
+      blockId: 'figure',
+      sourcePage: 1,
+      sourceRect: { x: 100, y: 50, width: 240, height: 120 },
+      x: 20,
+      y: 30,
+      width: 360,
+      height: 240,
+    };
+    const sourceRect = { x: 130, y: 70, width: 50, height: 20 };
+    const output = regionRectToOutput(placement, sourceRect);
+    expectRect(output, { x: 65, y: 70, width: 75, height: 40 });
+    expectRect(regionRectToSource(placement, output), sourceRect);
+  });
+});
+
 describe('content-based page links', () => {
+  it.each([90, 270] as const)(
+    'links the unrotated source crop to the whole %i° rotated result without a second transform',
+    (rotation) => {
+      const sourceRect = { x: 100, y: 50, width: 240, height: 120 };
+      const placement: RegionPlacement = {
+        type: 'region',
+        blockId: 'object',
+        sourcePage: 1,
+        sourceRect,
+        rotation,
+        x: 20,
+        y: 30,
+        width: 180,
+        height: 360,
+      };
+      const object: ReadingBlock = {
+        ...block('object', 1, []),
+        kind: 'sourceRegion',
+        rect: sourceRect,
+      };
+      const links = buildPageLinks(
+        source([[]]),
+        reading([object]),
+        layout([{ number: 2, sourcePages: [1], placements: [placement] }]),
+      );
+      const expected = {
+        source: { page: 1, rect: sourceRect },
+        output: { page: 2, rect: { x: 20, y: 30, width: 180, height: 360 } },
+      };
+      expect(links.bySource.get(1)).toEqual(expected);
+      expect(links.byOutput.get(2)).toEqual(expected);
+    },
+  );
+
   it('ignores line-number decorations and uses the placed text start offset', () => {
     const items = [item('first', 'Repeated.', 40), item('second', 'Repeated.', 90)];
     const paragraph = block('paragraph', 1, items);

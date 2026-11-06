@@ -45,6 +45,156 @@ function row(items: SourceText[]) {
 }
 
 describe('inline mathematical objects', () => {
+  it('keeps an unmapped symbol with its equals-led definition rather than the next variable', () => {
+    const phi = {
+      ...item('phi', '\u0002', 80.221, 7.78, 10, 386.857),
+      y: 378.357,
+      height: 10.5,
+      fontName: 'legacy-symbol',
+    };
+    const sub = item('sub', 'j', 88.001, 1.332, 6, 390.157);
+    const description = item('description', '= Flux CTF coefficient,', 92.221, 95.125, 10, 386.857);
+    const nextVariable = { ...item('next', 'T', 80.221, 5.75, 10, 400.607), fontName: 'italic' };
+    const nextSub = item('next-sub', 'i', 85.971, 1.332, 6, 403.907);
+    const nextDescription = item(
+      'next-description',
+      '= Inside surface temperature (°C),',
+      92.221,
+      138.12,
+      10,
+      400.607,
+    );
+    const page = source([phi, sub, description, nextVariable, nextSub, nextDescription]);
+    const atoms = inlineMathAtoms(page, [
+      row([phi, sub, description]),
+      row([nextVariable, nextSub, nextDescription]),
+    ]);
+    const atom = atoms.find((entry) => entry.sourceIds.includes('phi'))!;
+    expect(atom.sourceIds).toEqual(['phi', 'sub']);
+    expect(atom.baselineY).toBeCloseTo(386.857);
+    expect(atom.rect.y).toBeLessThanOrEqual(phi.y);
+    expect(atom.sourceIds).not.toContain('next');
+  });
+
+  it('keeps raised delimiters on a short definition row instead of inventing a wrapped row', () => {
+    const previous = item('previous', 'A small conditional quantity will', 30, 250, 10, 100);
+    const entries = [
+      { ...item('base', 'V', 30, 7, 10, 124), fontName: 'math' },
+      item('left', '(', 39, 4, 10, 116),
+      { ...item('inner', 'σ', 45, 8, 10, 124), fontName: 'math' },
+      item('right', ')', 55, 4, 10, 116),
+      item('article', 'The', 70, 15, 10, 124),
+      item('conditional', 'conditional', 90, 48, 10, 124),
+      item('variance', 'variance', 143, 36, 10, 124),
+      item('verb', 'is', 190, 8, 10, 124),
+    ];
+    const page = source([previous, ...entries]);
+    const atoms = inlineMathAtoms(page, [
+      row([previous]),
+      row(entries.filter((entry) => !['left', 'right'].includes(entry.id))),
+      row(entries.filter((entry) => ['left', 'right'].includes(entry.id))),
+    ]);
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].sourceIds).toEqual(['base', 'left', 'inner', 'right']);
+    expect(atoms[0].baselineY).toBe(124);
+  });
+
+  it('keeps a legacy control-code symbol local while the surrounding prose remains text', () => {
+    const entries = [
+      item('prose', 'The normalized variable is scaled by', 30, 165),
+      { ...item('sigma', '\u0005', 200, 4), fontName: 'legacy-symbol' },
+      { ...item('variable', 'Y', 206, 6), fontName: 'legacy-symbol' },
+      item('tail', 'during the ordinary operating conditions.', 222, 200),
+    ];
+    const page = source(entries);
+    const atoms = inlineMathAtoms(page, [row(entries)]);
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].sourceIds).toEqual(['sigma', 'variable']);
+    expect(atoms[0].rect.width).toBeLessThan(20);
+  });
+
+  it('associates raised delimiter extraction boxes with their supported inline math row', () => {
+    const entries = [
+      item('prose', 'The quantity is computed using', 30, 165),
+      item('left', '(', 205, 4, 10, 85),
+      { ...item('sigma', 'σ', 211, 8), fontName: 'legacy-symbol' },
+      item('right', ')', 221, 4, 10, 85),
+      item('tail', 'and the remaining explanation stays editable.', 240, 210),
+    ];
+    const page = source(entries);
+    const atoms = inlineMathAtoms(page, [row(entries)]);
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].sourceIds).toEqual(['left', 'sigma', 'right']);
+    expect(atoms[0].rect.y).toBeGreaterThanOrEqual(88);
+    expect(atoms[0].sourceIds).not.toContain('prose');
+    expect(atoms[0].sourceIds).not.toContain('tail');
+  });
+
+  it('does not count word subscripts in a displayed objective as ordinary prose', () => {
+    const entries = [
+      item('base', 'O(x,t)', 100, 24),
+      item('equals', '=', 128, 7),
+      item('minimum', 'min', 139, 15),
+      item('opening', '(', 154, 4),
+      item('first-base', 'Q', 160, 7),
+      item('first-script', 'chiller', 167, 21, 7.5, 102),
+      item('first-arguments', '(x,t)', 188, 20),
+      item('first-plus', '+', 210, 7),
+      item('second-base', 'Q', 220, 7),
+      item('second-script', 'biogas', 227, 21, 7.5, 102),
+      item('second-arguments', '(x,t)', 250, 20),
+      item('second-plus', '+', 272, 7),
+      item('third-base', 'Q', 282, 7),
+      item('third-script', 'boiler', 289, 20, 7.5, 102),
+      item('third-arguments', '(x,t))', 311, 25),
+    ];
+    const page = source(entries);
+    expect(inlineMathAtoms(page, [row(page.items)])).toEqual([]);
+  });
+
+  it('does not mistake mathematical abbreviations and variables for a prose row', () => {
+    const label = item('label', 'WMI', 100, 22);
+    const equals = item('equals', '¼', 126, 7);
+    const first = item('first', 'w1OEFe', 136, 34);
+    const plus = item('plus', 'þ', 173, 7);
+    const second = item('second', 'w2OEMe', 183, 37);
+    const sigma = item('sigma', '∑', 226, 8);
+    const upper = item('upper', '2', 228, 3, 7, 94);
+    const lower = item('lower', 'i¼1', 224, 12, 7, 108);
+    const variable = item('variable', 'wi', 237, 8);
+    const page = source([label, equals, first, plus, second, sigma, upper, lower, variable]);
+    expect(inlineMathAtoms(page, [row(page.items)])).toEqual([]);
+  });
+
+  it('keeps a zero-advance hat with its overprinted compact variable and trims excess font descent', () => {
+    const prose = item('prose', 'The measured value is compared with', 30, 165);
+    const accent = { ...item('accent', ' \u0302', 200.7, 0), height: 24, fontName: 'accent' };
+    const variable = { ...item('variable', 'yi', 200, 7), fontName: 'italic' };
+    const tail = item('tail', 'is the predicted value in the ordinary sentence.', 215, 210);
+    const page = source([prose, accent, variable, tail]);
+    const atoms = inlineMathAtoms(page, [row(page.items)]);
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].sourceIds).toEqual(['accent', 'variable']);
+    expect(atoms[0].rect.width).toBeGreaterThanOrEqual(7);
+    expect(atoms[0].rect.height).toBeLessThan(16);
+    expect(atoms[0].sourceIds).not.toContain('tail');
+  });
+
+  it.each(['°', '◦'])(
+    'preserves a raised degree mark %s without freezing its prose row',
+    (symbol) => {
+      const prose = item('prose', 'The office temperature is maintained at 22', 30, 200);
+      const degree = item('degree', symbol, 231, 4, 7.5, 96.4);
+      const tail = item('tail', 'C during the occupied period of the day.', 237, 190);
+      const page = source([prose, degree, tail]);
+      const atoms = inlineMathAtoms(page, [row(page.items)]);
+      expect(atoms).toHaveLength(1);
+      expect(atoms[0].sourceIds).toEqual(['degree']);
+      expect(atoms[0].rect.width).toBeLessThan(10);
+      expect(atoms[0].baselineY).toBe(100);
+    },
+  );
+
   it.each([
     ['<', '⋅'],
     ['>', '·'],

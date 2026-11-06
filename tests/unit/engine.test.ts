@@ -65,12 +65,49 @@ describe('configuration and geometry', () => {
     { ...DEFAULT_CONFIG, marginTopPt: 500 },
     { ...DEFAULT_CONFIG, pageWidthPt: NaN },
     { ...DEFAULT_CONFIG, fontSizePt: Infinity },
-    { ...DEFAULT_CONFIG, lineHeightPt: 1 },
+    { ...DEFAULT_CONFIG, lineHeightPercent: 1 },
+    { ...DEFAULT_CONFIG, lineHeightPercent: 99 },
+    { ...DEFAULT_CONFIG, lineHeightPercent: Infinity },
+    { ...DEFAULT_CONFIG, lineHeightPercent: 1001 },
+    { ...DEFAULT_CONFIG, fontSizePt: 72, lineHeightPercent: 300 },
     { ...DEFAULT_CONFIG, paragraphGapPt: -1 },
     { ...DEFAULT_CONFIG, fontFamily: 'unknown' },
   ])('rejects invalid imported configuration %#', (invalid) => {
     expect(() => validateConfig(invalid)).toThrow(RangeError);
   });
+  it('accepts the minimum percentage without silently increasing it', () => {
+    const config = validateConfig({ ...DEFAULT_CONFIG, lineHeightPercent: 100 });
+    expect(config.lineHeightPercent).toBe(100);
+  });
+  it.each([
+    [10, 100, 10],
+    [10, 110, 11],
+    [10, 150, 15],
+    [20, 150, 30],
+  ])(
+    'uses %i pt text with %i percent line spacing without a hidden minimum',
+    (size, lineHeightPercent, expectedGap) => {
+      const result = layoutDocument(
+        reading('alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu '.repeat(4)),
+        {
+          ...DEFAULT_CONFIG,
+          pageWidthPt: 300,
+          pageHeightPt: 800,
+          fontSizePt: size,
+          lineHeightPercent,
+        },
+        measure,
+      );
+      const lines = result.pages[0].placements
+        .filter((placement) => placement.type === 'text')
+        .filter((placement) => !placement.decoration);
+      expect(lines.length).toBeGreaterThan(1);
+      expect(lines[0].fontSize).toBe(size);
+      const firstBaseline = lines[0].y + lines[0].fontSize;
+      const secondBaseline = lines[1].y + lines[1].fontSize;
+      expect(secondBaseline - firstBaseline).toBeCloseTo(expectedGap);
+    },
+  );
   it('rejects impossible and non-finite widths', () => {
     expect(() => contentWidth(100, 60, 60)).toThrow(RangeError);
     expect(() => contentWidth(NaN, 0, 0)).toThrow(RangeError);
@@ -444,7 +481,7 @@ describe('measured reflow and pagination', () => {
           pageWidthPt: width,
           pageHeightPt: height,
           fontSizePt: size,
-          lineHeightPt: size * 1.6,
+          lineHeightPercent: 160,
           marginLeftPt: margin,
           marginRightPt: margin,
         },

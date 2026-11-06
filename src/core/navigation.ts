@@ -1,5 +1,59 @@
 import { finiteRect } from './geometry';
-import type { LayoutDocument, ReadingDocument, Rect, SourceDocument, SourceText } from './model';
+import type {
+  LayoutDocument,
+  ReadingDocument,
+  Rect,
+  RegionPlacement,
+  SourceDocument,
+  SourceText,
+} from './model';
+
+function mappedRect(rect: Rect, point: (x: number, y: number) => { x: number; y: number }): Rect {
+  const corners = [
+    point(rect.x, rect.y),
+    point(rect.x + rect.width, rect.y),
+    point(rect.x, rect.y + rect.height),
+    point(rect.x + rect.width, rect.y + rect.height),
+  ];
+  const x = Math.min(...corners.map((corner) => corner.x));
+  const y = Math.min(...corners.map((corner) => corner.y));
+  return {
+    x,
+    y,
+    width: Math.max(...corners.map((corner) => corner.x)) - x,
+    height: Math.max(...corners.map((corner) => corner.y)) - y,
+  };
+}
+
+/** Source coordinates stay unrotated; placement bounds use clockwise, top-left coordinates. */
+export function regionRectToOutput(placement: RegionPlacement, rect: Rect): Rect {
+  const source = placement.sourceRect;
+  return mappedRect(rect, (x, y) => {
+    const u = (x - source.x) / source.width;
+    const v = (y - source.y) / source.height;
+    const [horizontal, vertical] =
+      placement.rotation === 90 ? [1 - v, u] : placement.rotation === 270 ? [v, 1 - u] : [u, v];
+    return {
+      x: placement.x + horizontal * placement.width,
+      y: placement.y + vertical * placement.height,
+    };
+  });
+}
+
+/** Inverse mapping for a result selection, including a point represented by a zero-size rect. */
+export function regionRectToSource(placement: RegionPlacement, rect: Rect): Rect {
+  const source = placement.sourceRect;
+  return mappedRect(rect, (x, y) => {
+    const u = (x - placement.x) / placement.width;
+    const v = (y - placement.y) / placement.height;
+    const [horizontal, vertical] =
+      placement.rotation === 90 ? [v, 1 - u] : placement.rotation === 270 ? [1 - v, u] : [u, v];
+    return {
+      x: source.x + horizontal * source.width,
+      y: source.y + vertical * source.height,
+    };
+  });
+}
 
 export interface PageAnchor {
   page: number;
@@ -130,6 +184,8 @@ export function buildPageLinks(
       const original = sourcePages.get(placement.sourcePage);
       if (!original) continue;
       let sourceRect: Rect | undefined;
+      // A page link targets the complete object, so retain its original crop
+      // and its already-rotated output bounds without transforming either twice.
       if (placement.type === 'region') sourceRect = placement.sourceRect;
       else {
         const block = blocks.get(placement.blockId);

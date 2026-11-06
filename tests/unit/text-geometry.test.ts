@@ -7,6 +7,8 @@ describe('source text geometry', () => {
     [Infinity, -0.2],
     [0.8, -Infinity],
     [0, 0],
+    [0, -0.8],
+    [-0.1, -0.8],
     [-0.2, 0.8],
   ])('uses baseline-relative fallback for unusable font metrics %s/%s', (ascent, descent) => {
     const measured = textGeometry([9, 0, 0, -9, 299.25, 742], 13.5, 9, ascent, descent);
@@ -33,11 +35,7 @@ describe('source text geometry', () => {
     expect(measured.rect.y + measured.rect.height).toBeCloseTo(645.615);
   });
 
-  it.each([
-    [2.4, -1.3],
-    [0, -0.8],
-    [-0.1, -0.8],
-  ])('retains valid unusual font metrics %s/%s', (ascent, descent) => {
+  it.each([[2.4, -1.3]])('retains valid unusual font metrics %s/%s', (ascent, descent) => {
     const measured = textGeometry([10, 0, 0, -10, 33, 80], 120, 10, ascent, descent);
     expect(measured.rect.y).toBeCloseTo(80 - ascent * 10);
     expect(measured.rect.height).toBeCloseTo((ascent - Math.min(descent, ascent - 1)) * 10);

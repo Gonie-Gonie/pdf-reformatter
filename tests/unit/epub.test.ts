@@ -61,6 +61,25 @@ function unpack(blocks: ReadingBlock[], resources = assets(), document = source(
 }
 
 describe('reflowable EPUB export', () => {
+  it.each([10, 20])('keeps a 1.5 line-spacing ratio when the body font is %i pt', (fontSizePt) => {
+    const bytes = buildEpub(
+      source(),
+      reading([
+        block('heading', 'A chapter heading', { kind: 'heading' }),
+        block('body', 'A readable paragraph.'),
+      ]),
+      { ...DEFAULT_CONFIG, fontSizePt, lineHeightPercent: 150 },
+      assets(),
+    );
+    const css = strFromU8(unzipSync(bytes)['EPUB/styles.css']);
+    const body = css.match(/body\{([^}]+)\}/u)![1];
+    expect(body).toContain('line-height:1.5;');
+    const relativeSize = Number(body.match(/font-size:([\d.]+)em/u)![1]);
+    expect(relativeSize).toBeCloseTo(fontSizePt / DEFAULT_CONFIG.fontSizePt, 3);
+    const headings = css.match(/h2,h3,h4,h5,h6\{([^}]+)\}/u)![1];
+    expect(headings).not.toContain('line-height:');
+  });
+
   it('writes the required first uncompressed mimetype entry, package and navigation', () => {
     const { data, files, text } = unpack([block('body', 'A readable paragraph.')]);
     const header = new DataView(data.buffer, data.byteOffset, data.byteLength);

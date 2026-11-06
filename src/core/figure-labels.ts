@@ -10,6 +10,7 @@ function compactLabel(item: SourceText): boolean {
     value.length > 0 &&
     value.length <= 64 &&
     value.split(/\s+/u).length <= 5 &&
+    !/^[（(]\s*\d+(?:\s*[.:]\s*\d+)+[a-z]?\s*[)）]$/iu.test(value) &&
     !/[.!?]\s*$/u.test(value) &&
     !/^(?:fig(?:ure)?\.?|table|eq(?:uation)?\.?|note|source|그림|표|각주|미주)\s*(?:\d|[:.]|\s)/iu.test(
       value,

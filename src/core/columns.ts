@@ -186,7 +186,18 @@ function gutterFromRows(
     }
     consider();
   }
-  return best;
+  if (best === undefined) return;
+  // An indented right column may dominate the supporting windows. Its occasional
+  // outdented continuation still bounds the same whitespace strip and must not
+  // be cut through merely because that row was outside the winning window.
+  const neighboring = gaps.filter(
+    (gap) => gap.left <= best! + size * 1.5 && gap.right >= best! - size * 1.5,
+  );
+  const commonLeft = Math.max(...neighboring.map((gap) => gap.left));
+  const commonRight = Math.min(...neighboring.map((gap) => gap.right));
+  return commonRight - commonLeft >= minimumGap
+    ? commonRight - Math.min((commonRight - commonLeft) / 2, size)
+    : best;
 }
 
 /** A substantial drawing can supply the otherwise text-free side of a column. */
