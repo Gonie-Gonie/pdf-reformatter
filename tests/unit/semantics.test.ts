@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeDocument } from '../../src/core/analyze';
+import { analyzePageSemantics } from '../../src/core/semantics';
 import type {
   ReadingDocument,
   SourceDocument,
@@ -70,6 +71,178 @@ function owned(reading: ReadingDocument, source: SourceDocument) {
 }
 
 describe('semantic PDF analysis', () => {
+  it('preserves tagged table cells and rules without absorbing its caption or following prose', () => {
+    const cells = [
+      item('head-left', 'Model', 48, 100, 120),
+      item('head-right', 'Configuration', 330, 100, 220),
+      item('left-1', 'Ridge', 48, 124, 120),
+      item('right-1', 'Standardized inputs', 330, 124, 220),
+      item('left-2', 'Random forest', 48, 148, 120),
+      item('right-2', 'Three hundred trees', 330, 148, 220),
+    ];
+    const original = page(
+      [
+        item('caption', 'Table 1. Forecasting models and configurations.', 48, 70, 500),
+        ...cells,
+        item('untagged-cell', 'Supplemental cell label', 330, 136, 180),
+        item('after', 'Following prose must remain available for reflow.', 48, 200, 500),
+      ],
+      1,
+      [
+        group(
+          'table',
+          'Table',
+          cells.map((entry) => entry.id),
+          0,
+        ),
+      ],
+    );
+    original.graphicRegions = [96, 162].map((y) => ({ x: 45, y, width: 510, height: 2 }));
+    const source = document([original]),
+      reading = analyzeDocument(source),
+      table = reading.blocks.find((block) => block.id === 'p1:table:table')!;
+    expect(table.kind).toBe('sourceRegion');
+    expect(table.sourceIds).toHaveLength(7);
+    expect(table.sourceIds).toEqual(expect.arrayContaining(cells.map((entry) => entry.id)));
+    expect(table.sourceIds).toContain('untagged-cell');
+    expect(table.sourceIds).not.toContain('caption');
+    expect(table.sourceIds).not.toContain('after');
+    expect(table.rect.y).toBe(96);
+    expect(table.rect.y + table.rect.height).toBe(164);
+    expect(reading.blocks.find((block) => block.sourceIds.includes('after'))?.kind).toBe(
+      'paragraph',
+    );
+    owned(reading, source);
+  });
+
+  it('claims a nested table once and keeps an adjacent diagram outside its crop', () => {
+    const cells = [
+      item('one', 'Header', 48, 100, 120),
+      item('two', 'Value', 220, 100, 100),
+      item('three', 'Entry', 48, 124, 120),
+      item('four', 'Result', 220, 124, 100),
+    ];
+    const original = page(cells, 1, [
+      group(
+        'outer',
+        'Table',
+        cells.map((entry) => entry.id),
+        0,
+      ),
+      group('inner', 'Table', ['two', 'four'], 1, 'outer'),
+    ]);
+    original.graphicRegions = [{ x: 330, y: 95, width: 200, height: 140 }];
+    const semantic = analyzePageSemantics(original);
+    expect(semantic.blocks).toHaveLength(1);
+    expect(semantic.blocks[0].sourceIds).toHaveLength(4);
+    expect(semantic.blocks[0].rect.x + semantic.blocks[0].rect.width).toBeLessThanOrEqual(330);
+    expect(new Set(semantic.blocks[0].sourceIds).size).toBe(4);
+  });
+
+  it('keeps a table inside a tagged note in the existing compound note', () => {
+    const entries = [
+      item('label', '1', 48, 600, 8, 9),
+      item('heading', 'A table in a note.', 62, 600, 180, 9),
+      item('left', 'Label', 62, 620, 100, 9),
+      item('right', 'Value', 330, 620, 100, 9),
+    ];
+    const source = document([
+        page(entries, 1, [
+          group(
+            'note',
+            'Note',
+            entries.map((entry) => entry.id),
+            0,
+          ),
+          group('table', 'Table', ['left', 'right'], 1, 'note'),
+        ]),
+      ]),
+      reading = analyzeDocument(source);
+    expect(reading.blocks).toHaveLength(1);
+    expect(reading.blocks[0]).toMatchObject({ kind: 'sourceRegion', semantic: 'note' });
+    owned(reading, source);
+  });
+
+  it('does not infer authoritative tables from untagged tabular-looking text', () => {
+    const original = page([
+      item('left', 'A paragraph begins in the left column.', 48, 100, 220),
+      item('right', 'An independent paragraph begins on the right.', 330, 100, 220),
+    ]);
+    expect(
+      analyzePageSemantics(original).blocks.some((block) => block.id.includes(':table:')),
+    ).toBe(false);
+  });
+
+  it('uses a standalone caption, rules and repeated small cell columns to preserve an untagged table', () => {
+    const cells = [0, 1, 2].flatMap((index) => [
+      item(`left-${index}`, `Model ${index}`, 48, 100 + index * 20, 120, 8),
+      item(`right-${index}`, `Configuration ${index}`, 330, 100 + index * 20, 220, 8),
+    ]);
+    const original = page([
+      item('body', 'An ordinary paragraph establishes the document body size.', 48, 35, 500),
+      item('caption', 'Table 1', 48, 70, 40, 10),
+      item('description', 'Model configurations.', 48, 84, 180, 10),
+      ...cells,
+      item('following', 'The following paragraph still flows independently.', 48, 200, 500),
+    ]);
+    original.graphicRegions = [98, 160].map((y) => ({ x: 45, y, width: 510, height: 2 }));
+    const semantic = analyzePageSemantics(original),
+      table = semantic.blocks.find((block) => block.id.includes(':table:ruled:'))!;
+    expect(table).toBeDefined();
+    expect(table.sourceIds).toEqual(expect.arrayContaining(cells.map((entry) => entry.id)));
+    expect(table.sourceIds).toHaveLength(6);
+    expect(table.sourceIds).not.toEqual(
+      expect.arrayContaining(['caption', 'description', 'following']),
+    );
+    const source = document([original]),
+      reading = analyzeDocument(source);
+    owned(reading, source);
+  });
+
+  it.each(['inline reference', 'no rules', 'unstable columns'])(
+    'leaves an ambiguous untagged table candidate unchanged: %s',
+    (variant) => {
+      const original = page([
+        item(
+          'body-early',
+          'Continuous prose above the table keeps its ordinary font size.',
+          48,
+          5,
+          500,
+        ),
+        item(
+          'body-middle',
+          'More ordinary prose supplies independent body-font evidence.',
+          48,
+          20,
+          500,
+        ),
+        item('body', 'An ordinary paragraph establishes the document body size.', 48, 35, 500),
+        item('caption', 'Table 1', 48, 70, 40, 10),
+        ...[0, 1, 2].flatMap((index) => [
+          item(`left-${index}`, `Model ${index}`, 48, 100 + index * 20, 120, 8),
+          item(
+            `right-${index}`,
+            `Configuration ${index}`,
+            variant === 'unstable columns' ? 330 + index * 35 : 330,
+            100 + index * 20,
+            120,
+            8,
+          ),
+        ]),
+      ]);
+      if (variant === 'inline reference')
+        original.items.push(
+          item('continuation', 'is discussed in this paragraph.', 91, 70, 250, 10),
+        );
+      if (variant !== 'no rules')
+        original.graphicRegions = [98, 160].map((y) => ({ x: 45, y, width: 510, height: 2 }));
+      expect(
+        analyzePageSemantics(original).blocks.some((block) => block.id.includes(':table:ruled:')),
+      ).toBe(false);
+    },
+  );
+
   it.each(['Contents', 'Index'])(
     'keeps an untagged multiline %s entry with its reference numbers',
     (heading) => {

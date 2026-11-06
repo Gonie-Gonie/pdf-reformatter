@@ -223,7 +223,7 @@ input:focus::-webkit-inner-spin-button {
 }
 .preset-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
 }
 .preset-card {
@@ -279,14 +279,9 @@ input:focus::-webkit-inner-spin-button {
   left: 50%;
   border-left: 1px solid #b9a997;
 }
-.preset-shape.phone {
-  width: 17px;
-  height: 31px;
-  border-radius: 3px;
-}
-.preset-shape.a5 {
-  width: 22px;
-  height: 31px;
+.preset-shape.paper {
+  width: 24px;
+  height: 32px;
 }
 .theme-options {
   display: grid;

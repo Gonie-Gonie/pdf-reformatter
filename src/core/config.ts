@@ -1,8 +1,12 @@
 import type { LayoutConfig } from './model';
 
+// Main screen: 203.1 mm diagonal, 1968 × 2184 pixels in portrait orientation.
+// https://www.samsung.com/sec/smartphones/galaxy-z-fold7/specs/
+const FOLD7_PT_PER_PIXEL = ((203.1 / 25.4) * 72) / Math.hypot(1968, 2184);
+
 export const DEFAULT_CONFIG: LayoutConfig = {
-  pageWidthPt: 492,
-  pageHeightPt: 546,
+  pageWidthPt: 1968 * FOLD7_PT_PER_PIXEL,
+  pageHeightPt: 2184 * FOLD7_PT_PER_PIXEL,
   marginTopPt: 34,
   marginBottomPt: 34,
   marginLeftPt: 34,
@@ -16,28 +20,17 @@ export const DEFAULT_CONFIG: LayoutConfig = {
 
 export const PRESETS = [
   {
-    id: 'fold7-main-approved',
-    name: 'Fold7 펼친 화면',
-    description: '492 × 546 pt · 본문 13.2 pt · 행간 21.1 pt',
-    config: { ...DEFAULT_CONFIG },
+    name: 'Fold7',
+    shape: 'fold',
+    width: DEFAULT_CONFIG.pageWidthPt,
+    height: DEFAULT_CONFIG.pageHeightPt,
   },
   {
-    id: 'phone',
-    name: '휴대폰 세로',
-    description: '360 × 640 pt · 작은 화면에 맞춘 읽기본',
-    config: {
-      ...DEFAULT_CONFIG,
-      pageWidthPt: 360,
-      pageHeightPt: 640,
-      marginLeftPt: 24,
-      marginRightPt: 24,
-    },
-  },
-  {
-    id: 'a5',
-    name: 'A5 읽기본',
-    description: '419.53 × 595.28 pt · 인쇄와 태블릿',
-    config: { ...DEFAULT_CONFIG, pageWidthPt: 419.53, pageHeightPt: 595.28 },
+    name: '몽블랑 디지털 페이퍼',
+    shape: 'paper',
+    // Approximate active screen size from 1860 × 2480 pixels at the specified 300 PPI.
+    width: (1860 / 300) * 72,
+    height: (2480 / 300) * 72,
   },
 ] as const;
 

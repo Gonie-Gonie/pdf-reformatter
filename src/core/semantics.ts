@@ -96,6 +96,124 @@ function rows(items: SourceText[]): Row[] {
     })
     .sort((a, b) => a.y - b.y || a.x - b.x);
 }
+
+/** Table evidence uses baselines, since tight leading can make adjacent glyph boxes overlap. */
+function tableRows(items: SourceText[]): Row[] {
+  const baseline = (item: SourceText) => item.baselineY ?? item.y + item.fontSize;
+  const grouped: SourceText[][] = [];
+  for (const item of [...items].sort((a, b) => baseline(a) - baseline(b) || a.x - b.x)) {
+    const last = grouped.at(-1),
+      anchor = last?.[0];
+    if (
+      anchor &&
+      Math.abs(baseline(anchor) - baseline(item)) <=
+        Math.max(1, Math.min(anchor.fontSize, item.fontSize) * 0.4)
+    )
+      last!.push(item);
+    else grouped.push([item]);
+  }
+  return grouped.map((entries) => ({
+    items: entries.sort((a, b) => a.x - b.x),
+    text: entries.map((item) => item.text).join(' '),
+    ...union(entries),
+    size: median(entries.map((item) => item.fontSize)),
+  }));
+}
+
+/** A caption, ruled edges and repeated cell columns are all required for untagged tables. */
+function ruledTableEntries(
+  page: SourcePage,
+  claimed: Set<string>,
+  bodySize: number,
+): TaggedEntry[] {
+  const candidates: TaggedEntry[] = [];
+  const available = page.items.filter((item) => !claimed.has(item.id));
+  const baseline = (item: SourceText) => item.baselineY ?? item.y + item.fontSize;
+  const isCaption = (caption: SourceText) =>
+    /^(?:table|표)\s*\d+[a-z]?[.:]?\s*$/iu.test(caption.text.trim()) &&
+    !caption.structureRoles?.includes('Link') &&
+    !available.some(
+      (item) =>
+        item !== caption &&
+        Math.abs(baseline(item) - baseline(caption)) < caption.fontSize * 0.3 &&
+        item.x >= caption.x + caption.width - caption.fontSize * 0.1 &&
+        item.x - caption.x - caption.width < caption.fontSize * 2,
+    );
+  for (const caption of available) {
+    const textSize = Math.max(bodySize, caption.fontSize);
+    if (!isCaption(caption)) continue;
+    const nearRules = page.graphicRegions.filter(
+      (region) =>
+        region.y > caption.y &&
+        region.y < caption.y + caption.fontSize * 12 &&
+        region.height <= textSize * 3 &&
+        region.width >= textSize,
+    );
+    if (!nearRules.length) continue;
+    const fullWidth = nearRules.some((region) => region.width > page.width * 0.55);
+    const left = caption.x - caption.fontSize,
+      right = fullWidth || caption.x >= page.width * 0.45 ? page.width : page.width / 2;
+    const inColumn = (rect: Rect) => rect.x >= left && rect.x + rect.width <= right + 1;
+    const columnRows = tableRows(
+      available.filter((item) => inColumn(item) && item.y > caption.y + caption.fontSize * 0.5),
+    );
+    const divided = (row: Row) =>
+      row.items.some(
+        (item, index) =>
+          index > 0 &&
+          item.x - row.items[index - 1].x - row.items[index - 1].width > textSize * 1.2,
+      );
+    const first = columnRows.find(
+      (row) =>
+        row.y < caption.y + caption.fontSize * 12 &&
+        row.size < textSize * 0.94 &&
+        divided(row) &&
+        nearRules.some((region) => inColumn(region) && Math.abs(region.y - row.y) < textSize * 3),
+    );
+    if (!first) continue;
+    const after = columnRows.filter((row) => row.y >= first.y - first.size * 0.8);
+    const stop = after.find(
+      (row) =>
+        row.y > first.y + first.size && row.size > first.size * 1.18 && /\p{L}{3}/u.test(row.text),
+    );
+    const nextCaption = Math.min(
+      ...available
+        .filter((item) => item.y > first.y && inColumn(item) && isCaption(item))
+        .map((item) => item.y),
+    );
+    const end = Math.min(stop?.y ?? page.height, nextCaption, page.height * 0.95);
+    const rules = page.graphicRegions.filter(
+      (region) =>
+        inColumn(region) &&
+        region.height <= textSize * 3 &&
+        region.width >= textSize &&
+        region.y >= first.y - textSize * 3 &&
+        region.y + region.height < end,
+    );
+    if (
+      rules.length < 2 ||
+      Math.max(...rules.map((region) => region.y)) - Math.min(...rules.map((region) => region.y)) <
+        textSize * 2
+    )
+      continue;
+    const bottom = Math.max(...rules.map((region) => region.y + region.height));
+    const cellRows = after.filter((row) => row.y < bottom && row.y < end);
+    const matrix = cellRows.filter(divided);
+    if (matrix.length < 3) continue;
+    const starts = new Map<number, Set<Row>>();
+    for (const row of matrix)
+      for (const item of row.items) {
+        const x = Math.round(item.x / (first.size * 0.6)) * first.size * 0.6;
+        const seen = starts.get(x) ?? new Set<Row>();
+        seen.add(row);
+        starts.set(x, seen);
+      }
+    const stable = [...starts].filter(([, seen]) => seen.size >= 3).map(([x]) => x);
+    if (!stable.some((x) => stable.some((other) => other - x > first.size * 2.5))) continue;
+    candidates.push({ id: `ruled:${caption.id}`, items: cellRows.flatMap((row) => row.items) });
+  }
+  return candidates;
+}
 function label(text: string): string | undefined {
   const match =
     /^(?:\[\s*(\d{1,3})\s*\]|[（(]\s*(\d{1,3})\s*[)）]|(\d{1,3})(?:[.)]|(?=\s|$))|([*†‡]))/u.exec(
@@ -369,14 +487,113 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
     blocks.push(block);
     free.forEach((item) => claimed.add(item.id));
   };
+  const addTable = (entries: SourceText[], key: string, tagged = true) => {
+    const free = [...new Map(entries.map((item) => [item.id, item])).values()].filter(
+      (item) => !claimed.has(item.id),
+    );
+    // A partially claimed or overlapping structure cannot safely introduce another crop.
+    if (!free.length || free.length !== new Set(entries.map((item) => item.id)).size) return;
+    const cellRect = union(free),
+      padding = Math.max(3, median(free.map((item) => item.fontSize)) * 2);
+    const graphics = page.graphicRegions.filter(
+      (region) =>
+        region.x >= cellRect.x - padding &&
+        region.y >= cellRect.y - padding &&
+        region.x + region.width <= cellRect.x + cellRect.width + padding &&
+        region.y + region.height <= cellRect.y + cellRect.height + padding &&
+        intersects(region, cellRect, padding),
+    );
+    const inside = (item: SourceText) =>
+      item.x + item.width / 2 >= cellRect.x &&
+      item.x + item.width / 2 <= cellRect.x + cellRect.width &&
+      item.y + item.height / 2 >= cellRect.y &&
+      item.y + item.height / 2 <= cellRect.y + cellRect.height;
+    if (page.items.some((item) => claimed.has(item.id) && inside(item))) return;
+    const included = page.items.filter((item) => inside(item));
+    const ordered = rows([
+      ...new Map([...free, ...included].map((item) => [item.id, item])).values(),
+    ]);
+    const owned = ordered.flatMap((row) => row.items);
+    const ownedIds = new Set(owned.map((item) => item.id));
+    const contentRect = union(owned),
+      edge = Math.min(3, padding / 3);
+    const padded = {
+      x: contentRect.x - padding,
+      y: contentRect.y - edge,
+      width: contentRect.width + padding * 2,
+      height: contentRect.height + edge * 2,
+    };
+    const envelope = union([padded, ...graphics]);
+    let left = envelope.x,
+      top = envelope.y,
+      right = envelope.x + envelope.width,
+      bottom = envelope.y + envelope.height;
+    for (const item of page.items.filter((entry) => !ownedIds.has(entry.id))) {
+      if (!intersects(envelope, item)) continue;
+      const centerX = item.x + item.width / 2,
+        centerY = item.y + item.height / 2;
+      if (item.x < right && item.x + item.width > left) {
+        if (centerY < contentRect.y && item.y + item.height - top > item.fontSize * 0.35)
+          top = Math.max(top, Math.min(contentRect.y, item.y + item.height));
+        if (centerY > contentRect.y + contentRect.height && bottom - item.y > item.fontSize * 0.35)
+          bottom = Math.min(bottom, Math.max(contentRect.y + contentRect.height, item.y));
+      }
+      if (item.y < bottom && item.y + item.height > top) {
+        if (centerX < contentRect.x)
+          left = Math.max(left, Math.min(contentRect.x, item.x + item.width));
+        if (centerX > contentRect.x + contentRect.width)
+          right = Math.min(right, Math.max(contentRect.x + contentRect.width, item.x));
+      }
+    }
+    for (const region of page.graphicRegions.filter((entry) => !graphics.includes(entry))) {
+      if (!intersects(envelope, region) || intersects(contentRect, region)) continue;
+      if (region.x >= contentRect.x + contentRect.width) right = Math.min(right, region.x);
+      if (region.x + region.width <= contentRect.x) left = Math.max(left, region.x + region.width);
+      if (region.y >= contentRect.y + contentRect.height) bottom = Math.min(bottom, region.y);
+      if (region.y + region.height <= contentRect.y) top = Math.max(top, region.y + region.height);
+    }
+    const rect = clampRect(
+      { x: left, y: top, width: right - left, height: bottom - top },
+      page.width,
+      page.height,
+    );
+    blocks.push({
+      id: `p${page.number}:table:${key}`,
+      kind: 'sourceRegion',
+      semantic: 'table',
+      sourcePage: page.number,
+      sourceIds: owned.map((item) => item.id),
+      sourceSpans: sourceSpans(owned),
+      rect,
+      rawText: ordered.map((row) => row.items.map((item) => item.text).join('')).join('\n'),
+      text: ordered.map((row) => row.text.trim()).join(' '),
+      fontSize: median(owned.map((item) => item.fontSize)),
+      keepTogether: true,
+      reason: tagged
+        ? '태그로 지정된 표를 원문 모양으로 보존'
+        : '표 제목·구분선·열 정렬을 함께 확인한 표를 원문 모양으로 보존',
+      confidence: 'review',
+    });
+    owned.forEach((item) => claimed.add(item.id));
+  };
   for (const group of [...structures].sort((a, b) => a.order - b.order)) {
-    if (!noteRoles.has(group.role) && !['TOCI', 'LI', 'P', 'Index', 'TOC'].includes(group.role))
+    if (
+      !noteRoles.has(group.role) &&
+      !['Table', 'TOCI', 'LI', 'P', 'Index', 'TOC'].includes(group.role)
+    )
       continue;
     const entries = group.sourceIds.flatMap((id) =>
       items.get(id) && !items.get(id)!.artifact ? [items.get(id)!] : [],
     );
+    if (group.role === 'Table') {
+      addTable(entries, group.id);
+      continue;
+    }
     if (noteRoles.has(group.role)) {
-      add(entries, 'note', false, group.id);
+      const containsTable = structures.some(
+        (entry) => entry.role === 'Table' && descendantOf(entry, group, groupMap),
+      );
+      add(entries, 'note', containsTable, group.id);
       const note = blocks.find((block) => block.id === `p${page.number}:semantic:${group.id}`);
       const labeled = structures
         .filter((entry) => entry.role === 'Lbl' && descendantOf(entry, group, groupMap))
@@ -428,6 +645,8 @@ export function analyzePageSemantics(page: SourcePage): PageSemantics {
         add(row.items, semantic, true, `${group.id}:${index}`);
     } else add(entries, semantic, true, group.id);
   }
+  for (const entry of ruledTableEntries(page, claimed, bodySize))
+    addTable(entry.items, entry.id, false);
   const headings = allRows.filter(
     (row) =>
       contentsHeading.test(row.text) || indexHeading.test(row.text) || notesHeading.test(row.text),

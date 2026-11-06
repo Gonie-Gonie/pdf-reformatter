@@ -179,6 +179,7 @@ export async function extractPdf(
           text: item.str,
           ...geometry.rect,
           fontSize: geometry.fontSize,
+          ...(Math.abs(geometry.rotation) <= 0.5 ? { baselineY: transform[5] } : {}),
           ...(geometry.preserve || directional
             ? { preserve: true, rotation: geometry.rotation }
             : {}),

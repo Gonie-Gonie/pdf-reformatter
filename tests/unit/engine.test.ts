@@ -56,7 +56,8 @@ function reading(
 
 describe('configuration and geometry', () => {
   it('retains the documented Fold7 point geometry', () => {
-    expect(contentWidth(492, 34, 34)).toBe(424);
+    expect(contentWidth(DEFAULT_CONFIG.pageWidthPt, 34, 34)).toBeCloseTo(317.39365, 4);
+    expect(DEFAULT_CONFIG.pageHeightPt).toBeCloseTo(427.69295, 4);
     expect(validateConfig(DEFAULT_CONFIG)).toEqual(DEFAULT_CONFIG);
   });
   it.each([

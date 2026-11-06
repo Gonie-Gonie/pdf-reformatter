@@ -178,8 +178,8 @@ test('local conversion preserves Korean, English and column order in the result 
   const document = await PDFDocument.load(downloaded.bytes);
   expect(document.getPageCount()).toBeGreaterThan(0);
   for (const outputPage of document.getPages()) {
-    expect(outputPage.getWidth()).toBe(492);
-    expect(outputPage.getHeight()).toBe(546);
+    expect(outputPage.getWidth()).toBeCloseTo(385.39365, 4);
+    expect(outputPage.getHeight()).toBeCloseTo(427.69295, 4);
   }
   const text = await outputText(downloaded.bytes);
   expect(text).toContain('한글 문단의 줄바꿈');

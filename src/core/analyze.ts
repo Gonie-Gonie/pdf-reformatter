@@ -10,6 +10,9 @@ import type {
   SourceText,
 } from './model';
 import { clampRect, finiteRect, intersects, union } from './geometry';
+import { findColumnGutter } from './columns';
+import { closePreservationRegions, ownsPreservedText, preservedRasterRect } from './preservation';
+import type { PreservationRegion } from './preservation';
 import {
   analyzePageSemantics,
   noteMarkerIds,
@@ -31,6 +34,7 @@ interface Unit {
   line?: Line;
   block?: ReadingBlock;
   zone?: string;
+  gutter?: number;
 }
 const mathCharacters =
   /[∑∏∫√∞≠≤≥≈∂∇⊂⊃∈∉∀∃±×÷⇌↔⇒⇔²³¹\u2070-\u209fαβγδεζηθικλμνξοπρστυφχψωΓΔΘΛΞΠΣΥΦΨΩ]/u;
@@ -66,47 +70,71 @@ function buildLines(
   gutter?: number,
   referenceIds = new Set<string>(),
 ): Line[] {
-  const rows: SourceText[][] = [];
-  for (const item of [...items].sort((a, b) => a.y - b.y || a.x - b.x)) {
-    const row = rows.find((candidate) => {
-      const box = union(candidate);
-      const overlap = Math.min(box.y + box.height, item.y + item.height) - Math.max(box.y, item.y);
-      return (
-        overlap > Math.min(box.height, item.height) * 0.3 ||
-        Math.abs(box.y + box.height / 2 - (item.y + item.height / 2)) <
-          Math.max(item.fontSize, box.height) * 0.45 ||
-        candidate.some((entry) => {
-          const marker = referenceIds.has(entry.id)
-            ? entry
-            : referenceIds.has(item.id)
-              ? item
-              : undefined;
-          const body = marker === entry ? item : entry;
-          return (
-            marker &&
-            Math.abs(marker.y - body.y) < body.height &&
-            marker.x >= body.x + body.width - body.fontSize * 0.5 &&
-            marker.x <= body.x + body.width + body.fontSize * 1.5
-          );
-        })
-      );
-    });
-    if (row) row.push(item);
-    else rows.push([item]);
+  const rows: { anchor: SourceText; items: SourceText[] }[] = [];
+  // A row's anchor stays fixed. Superscripts must not enlarge its box until it
+  // touches the next baseline and joins an entire paragraph into a single row.
+  for (const item of [...items].sort((a, b) => b.fontSize - a.fontSize || a.y - b.y || a.x - b.x)) {
+    let nearest: (typeof rows)[number] | undefined;
+    let distance = Infinity;
+    for (const candidate of rows) {
+      const anchor = candidate.anchor;
+      const centerDistance = Math.abs(anchor.y + anchor.height / 2 - item.y - item.height / 2);
+      const hasBaseline = anchor.baselineY !== undefined && item.baselineY !== undefined;
+      const baselineDistance = hasBaseline
+        ? Math.abs(anchor.baselineY! - item.baselineY!)
+        : centerDistance;
+      const overlap =
+        Math.min(anchor.y + anchor.height, item.y + item.height) - Math.max(anchor.y, item.y);
+      const aligned = hasBaseline
+        ? baselineDistance <= Math.max(anchor.fontSize, item.fontSize) * 0.3
+        : overlap > Math.min(anchor.height, item.height) * 0.3 ||
+          centerDistance < Math.max(item.fontSize, anchor.fontSize) * 0.45;
+      const marker = candidate.items.some((entry) => {
+        const marker = referenceIds.has(entry.id)
+          ? entry
+          : referenceIds.has(item.id)
+            ? item
+            : undefined;
+        const body = marker === entry ? item : entry;
+        return (
+          marker &&
+          baselineDistance < anchor.fontSize * 0.8 &&
+          !(gutter !== undefined && body.x < gutter && marker.x >= gutter) &&
+          marker.x >= body.x + body.width - body.fontSize * 0.5 &&
+          marker.x <= body.x + body.width + body.fontSize * 1.5
+        );
+      });
+      const adornment =
+        (item.fontSize < anchor.fontSize * 0.85 ||
+          (item.width === 0 && /^\p{Mark}+$/u.test(item.text))) &&
+        baselineDistance <= anchor.fontSize * 0.8 &&
+        candidate.items.some(
+          (entry) =>
+            !(gutter !== undefined && entry.x < gutter && item.x >= gutter) &&
+            item.x >= entry.x - anchor.fontSize &&
+            item.x <= entry.x + entry.width + anchor.fontSize,
+        );
+      if ((aligned || marker || adornment) && baselineDistance < distance) {
+        nearest = candidate;
+        distance = baselineDistance;
+      }
+    }
+    if (nearest) nearest.items.push(item);
+    else rows.push({ anchor: item, items: [item] });
   }
   const lines: Line[] = [];
   for (const row of rows) {
-    const sorted = row.sort((a, b) => a.x - b.x);
+    const sorted = row.items.sort((a, b) => a.x - b.x);
     let segment: SourceText[] = [];
     for (const item of sorted) {
       const previous = segment.at(-1);
       if (
         previous &&
-        !referenceIds.has(item.id) &&
-        !referenceIds.has(previous.id) &&
         ((gutter !== undefined && previous.x < gutter && item.x >= gutter) ||
-          item.x - previous.x - previous.width >
-            Math.max(36, Math.min(previous.fontSize, item.fontSize) * 3))
+          (!referenceIds.has(item.id) &&
+            !referenceIds.has(previous.id) &&
+            item.x - previous.x - previous.width >
+              Math.max(36, Math.min(previous.fontSize, item.fontSize) * 3)))
       ) {
         lines.push(makeLine(segment));
         segment = [];
@@ -130,9 +158,25 @@ function makeLine(items: SourceText[]): Line {
 function mathLine(line: Line, referenceIds = new Set<string>()): boolean {
   const items = line.items.filter((item) => !referenceIds.has(item.id));
   const sizes = items.map((item) => item.fontSize).filter((size) => size > 0);
+  const size = median(sizes);
+  const baseline = median(
+    items
+      .filter((item) => item.fontSize >= size * 0.9 && item.baselineY !== undefined)
+      .map((item) => item.baselineY!),
+  );
   return (
     mathCharacters.test(itemText(items)) ||
+    items.some(
+      (item) =>
+        /[\u0000\ufffd]/u.test(item.text) || (item.width === 0 && /^\p{Mark}+$/u.test(item.text)),
+    ) ||
     items.some((item) => /math|symbol|cmsy|cmmi|cmex|msam|msbm/i.test(item.fontName)) ||
+    items.some(
+      (item) =>
+        item.baselineY !== undefined &&
+        item.fontSize < size * 0.85 &&
+        Math.abs(item.baselineY - baseline) > size * 0.2,
+    ) ||
     (sizes.length > 1 && Math.max(...sizes) / Math.min(...sizes) > 1.4)
   );
 }
@@ -196,7 +240,17 @@ function preservationRegions(
   page: SourcePage,
   lines: Line[],
   referenceIds = new Set<string>(),
-): { rect: Rect; reason: string }[] {
+): PreservationRegion[] {
+  const bands = columnBands(page, page.items);
+  const sameColumn = (a: Rect, b: Rect): boolean => {
+    const band = bands.find((entry) => a.y >= entry.top && a.y < entry.bottom);
+    if (!band || b.y < band.top || b.y >= band.bottom) return false;
+    const gutter = band.gutter;
+    return (
+      gutter === undefined ||
+      !((a.x + a.width <= gutter && b.x >= gutter) || (b.x + b.width <= gutter && a.x >= gutter))
+    );
+  };
   const pad = (rect: Rect): Rect =>
     clampRect(
       { x: rect.x - 2, y: rect.y - 2, width: rect.width + 4, height: rect.height + 4 },
@@ -230,11 +284,14 @@ function preservationRegions(
       if (!region.displayMath) continue;
       const neighbors = lines.filter(
         (line) =>
-          standaloneMath(line, referenceIds) && nearbyEquation(region.rect, line.rect, bodySize),
+          standaloneMath(line, referenceIds) &&
+          sameColumn(region.rect, line.rect) &&
+          nearbyEquation(region.rect, line.rect, bodySize),
       );
       const numbers = lines.filter(
         (line) =>
           equationNumber(line) &&
+          sameColumn(region.rect, line.rect) &&
           !line.items.some((item) => referenceIds.has(item.id)) &&
           line.rect.y < region.rect.y + region.rect.height + bodySize * 0.4 &&
           line.rect.y + line.rect.height > region.rect.y - bodySize * 0.4,
@@ -242,6 +299,7 @@ function preservationRegions(
       const drawings = regions.filter(
         (other) =>
           other !== region &&
+          sameColumn(region.rect, other.rect) &&
           (other.displayMath || other.reason === '그림·표·벡터 도형을 원문 모양으로 보존') &&
           nearbyEquation(region.rect, other.rect, bodySize),
       );
@@ -262,34 +320,7 @@ function preservationRegions(
       }
     }
   }
-  let changed = true;
-  let passes = 0;
-  while (changed && passes++ < page.items.length + regions.length + 2) {
-    changed = false;
-    for (const region of regions) {
-      const included = page.items.filter((item) => intersects(region.rect, item, 0.5));
-      const expanded = clampRect(union([region.rect, ...included]), page.width, page.height);
-      if (JSON.stringify(expanded) !== JSON.stringify(region.rect)) {
-        region.rect = expanded;
-        changed = true;
-      }
-    }
-    for (let index = 0; index < regions.length; index++) {
-      for (let other = regions.length - 1; other > index; other--) {
-        if (intersects(regions[index].rect, regions[other].rect, 1.5)) {
-          regions[index].rect = union([regions[index].rect, regions[other].rect]);
-          if (regions[index].reason !== regions[other].reason)
-            regions[index].reason = /수식/u.test(regions[index].reason + regions[other].reason)
-              ? '수식·도형과 인접 문자를 하나의 원문 영역으로 보존'
-              : '그림·회전 문자와 인접 영역을 함께 보존';
-          regions[index].displayMath ||= regions[other].displayMath;
-          regions.splice(other, 1);
-          changed = true;
-        }
-      }
-    }
-  }
-  return regions.filter((region) => finiteRect(region.rect));
+  return closePreservationRegions(page, regions);
 }
 
 function classify(line: Line, page: SourcePage, bodySize: number): BlockKind {
@@ -312,47 +343,37 @@ function classify(line: Line, page: SourcePage, bodySize: number): BlockKind {
   return 'paragraph';
 }
 
-/** Locate a persistent gutter; headings and wide figures become ordering barriers. */
-function findGutter(lines: Line[], width: number): number | undefined {
-  const starts = [
-    ...new Set(
-      lines
-        .filter((line) => line.rect.width < width * 0.62 && line.text.trim().length > 4)
-        .map((line) => Math.round(line.rect.x / 8) * 8),
-    ),
-  ].sort((a, b) => a - b);
-  let best: number | undefined;
-  let bestScore = 0;
-  for (let index = 1; index < starts.length; index++) {
-    const rightStart = starts[index];
-    if (
-      rightStart < width * 0.35 ||
-      rightStart > width * 0.78 ||
-      rightStart - starts[index - 1] < width * 0.13
+/** Only explicit, isolated page-wide rules justify a change of column layout. */
+function columnBands(page: SourcePage, items: SourceText[]) {
+  const bodySize = median(page.items.map((item) => item.fontSize));
+  const separators = page.graphicRegions
+    .filter(
+      (region) =>
+        region.width >= page.width * 0.8 &&
+        region.height <= Math.min(10, bodySize * 0.9) &&
+        !page.items.some((item) => {
+          const center = item.y + item.height / 2;
+          return (
+            center >= region.y - 1 &&
+            center <= region.y + region.height + 1 &&
+            item.x < region.x + region.width &&
+            item.x + item.width > region.x
+          );
+        }),
     )
-      continue;
-    const split = rightStart - 8;
-    const left = lines.filter(
-      (line) => line.rect.x < split && line.rect.x + line.rect.width <= rightStart - 4,
-    );
-    const right = lines.filter((line) => line.rect.x >= split && line.rect.width < width * 0.62);
-    if (left.length < 2 || right.length < 2) continue;
-    const overlap =
-      Math.min(
-        Math.max(...left.map((line) => line.rect.y)),
-        Math.max(...right.map((line) => line.rect.y)),
-      ) -
-      Math.max(
-        Math.min(...left.map((line) => line.rect.y)),
-        Math.min(...right.map((line) => line.rect.y)),
-      );
-    const score = Math.min(left.length, right.length);
-    if (overlap >= 0 && score > bestScore) {
-      best = split;
-      bestScore = score;
-    }
-  }
-  return best;
+    .map((region) => region.y + region.height / 2)
+    .sort((a, b) => a - b);
+  const cuts = [-Infinity, ...separators, Infinity];
+  return cuts.slice(0, -1).map((top, index) => {
+    const bottom = cuts[index + 1];
+    const selected = items.filter((item) => item.y >= top && item.y < bottom);
+    return {
+      top,
+      bottom,
+      items: selected,
+      gutter: findColumnGutter(selected, page.width, page.graphicRegions),
+    };
+  });
 }
 
 function orderUnits(units: Unit[], gutter: number | undefined): Unit[] {
@@ -388,7 +409,12 @@ function orderUnits(units: Unit[], gutter: number | undefined): Unit[] {
 function canJoin(previous: Line, next: Line, kind: BlockKind, zoneWidth: number): boolean {
   if (kind === 'heading' || kind === 'caption') return false;
   const gap = next.rect.y - previous.rect.y - previous.rect.height;
-  if (gap < -1 || gap > Math.max(previous.fontSize, next.fontSize) * 0.95) return false;
+  if (
+    next.rect.y <= previous.rect.y ||
+    gap < -Math.min(previous.rect.height, next.rect.height) * 0.4 ||
+    gap > Math.max(previous.fontSize, next.fontSize) * 0.95
+  )
+    return false;
   if (Math.abs(previous.fontSize - next.fontSize) > previous.fontSize * 0.15) return false;
   if (Math.abs(previous.rect.x - next.rect.x) > previous.fontSize * 1.6) return false;
   if (previous.rect.width < zoneWidth * 0.65 && /[.!?。！？:]\s*$/u.test(previous.text))
@@ -469,43 +495,64 @@ function analyzePage(
     items: page.items.filter((item) => !specialIds.has(item.id) && !numberIds.has(item.id)),
     graphicRegions: page.graphicRegions.filter(
       (region) =>
-        !semantic.blocks.some(
-          (block) =>
-            block.kind === 'sourceRegion' &&
+        !semantic.blocks.some((block) => {
+          if (block.kind !== 'sourceRegion') return false;
+          if (
             region.x >= block.rect.x &&
             region.y >= block.rect.y &&
             region.x + region.width <= block.rect.x + block.rect.width &&
-            region.y + region.height <= block.rect.y + block.rect.height,
-        ),
+            region.y + region.height <= block.rect.y + block.rect.height
+          )
+            return true;
+          if (block.semantic !== 'table') return false;
+          const overlapWidth = Math.max(
+            0,
+            Math.min(region.x + region.width, block.rect.x + block.rect.width) -
+              Math.max(region.x, block.rect.x),
+          );
+          const overlapHeight = Math.max(
+            0,
+            Math.min(region.y + region.height, block.rect.y + block.rect.height) -
+              Math.max(region.y, block.rect.y),
+          );
+          return overlapWidth * overlapHeight >= region.width * region.height * 0.75;
+        }),
     ),
   };
-  const gutterHint = findGutter(
-    workingPage.items.map((item) => makeLine([item])),
-    page.width,
+  const initialBands = columnBands(workingPage, workingPage.items);
+  const lines = initialBands.flatMap((band) =>
+    buildLines(band.items, band.gutter, semantic.referenceIds),
   );
-  const lines = buildLines(workingPage.items, gutterHint, semantic.referenceIds);
   const regions = preservationRegions(workingPage, lines, semantic.referenceIds);
   const claimed = new Set<string>();
   const units: Unit[] = [
     ...semantic.blocks.map((block) => ({ rect: block.rect, block })),
     ...regions.map((region) => {
       const items = workingPage.items.filter(
-        (item) => intersects(region.rect, item) && !claimed.has(item.id),
+        (item) => ownsPreservedText(region.rect, item) && !claimed.has(item.id),
       );
       items.forEach((item) => claimed.add(item.id));
-      return { rect: region.rect, block: sourceBlock(page, region.rect, items, region.reason) };
+      const rect = preservedRasterRect(workingPage, region, items);
+      return { rect, block: sourceBlock(page, rect, items, region.reason) };
     }),
   ];
   const remainingItems = workingPage.items.filter((item) => !claimed.has(item.id));
   // Labels inside a chart/table must not suggest columns for surrounding prose.
-  const proseGutter = findGutter(
-    remainingItems.map((item) => makeLine([item])),
-    page.width,
+  const bands = columnBands(workingPage, remainingItems).map((band, index) => ({
+    ...band,
+    gutter: band.gutter ?? initialBands[index].gutter,
+  }));
+  const remainingLines = bands.flatMap((band) =>
+    buildLines(band.items, band.gutter, semantic.referenceIds),
   );
-  const remainingLines = buildLines(remainingItems, proseGutter, semantic.referenceIds);
   units.push(...remainingLines.map((line) => ({ rect: line.rect, line })));
-  const gutter = proseGutter ?? findGutter(remainingLines, page.width);
-  const ordered = orderUnits(units, gutter);
+  const ordered = bands.flatMap((band, index) =>
+    orderUnits(
+      units.filter((unit) => unit.rect.y >= band.top && unit.rect.y < band.bottom),
+      band.gutter,
+    ).map((unit) => ({ ...unit, gutter: band.gutter, zone: `${index}:${unit.zone}` })),
+  );
+  const hasColumns = ordered.some((unit) => unit.gutter !== undefined);
   const bodySize = median(
     workingPage.items.filter((item) => item.text.trim().length > 8).map((item) => item.fontSize),
   );
@@ -526,7 +573,7 @@ function analyzePage(
       rawText: paragraph.map((line) => line.items.map((item) => item.text).join('')).join('\n'),
       text: joinLines(paragraph),
       fontSize: median(paragraph.map((line) => line.fontSize)),
-      confidence: gutter ? 'review' : 'high',
+      confidence: hasColumns ? 'review' : 'high',
     });
     paragraph = [];
   }
@@ -539,10 +586,10 @@ function analyzePage(
     }
     const line = unit.line!;
     const nextKind = classify(line, page, bodySize);
-    const zoneWidth = gutter
+    const zoneWidth = unit.gutter
       ? unit.zone?.endsWith('left')
-        ? gutter
-        : page.width - gutter
+        ? unit.gutter
+        : page.width - unit.gutter
       : page.width - Math.min(...remainingLines.map((entry) => entry.rect.x)) * 2;
     if (
       paragraph.length &&
@@ -623,7 +670,7 @@ function analyzePage(
   return {
     blocks,
     warnings: [
-      ...(gutter
+      ...(hasColumns
         ? [`${page.number}쪽: 2단 구성을 감지했습니다. 왼쪽 단 다음 오른쪽 단의 순서를 확인하세요.`]
         : []),
       ...(regions.some(

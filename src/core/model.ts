@@ -11,6 +11,7 @@ export interface SourceText extends Rect {
   fontSize: number;
   fontName: string;
   hasEOL: boolean;
+  baselineY?: number;
   markedContentId?: string;
   structureRoles?: string[];
   artifact?: boolean;
@@ -80,7 +81,7 @@ export interface ReadingBlock {
   fontSize: number;
   reason?: string;
   confidence: 'high' | 'review';
-  semantic?: 'toc' | 'index' | 'note';
+  semantic?: 'toc' | 'index' | 'note' | 'table';
   noteLabel?: string;
   sourceSpans?: SourceSpan[];
   anchor?: BlockAnchor;

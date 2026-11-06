@@ -7,7 +7,7 @@ import {
   getSourceBytes,
 } from '../adapters/pdf/client';
 import { downloadFile } from '../adapters/platform/download';
-import { DEFAULT_CONFIG, validateConfig } from '../core/config';
+import { DEFAULT_CONFIG, PRESETS, validateConfig } from '../core/config';
 import { buildPageLinks } from '../core/navigation';
 import type { PageAnchor, PageLink, PageLinks } from '../core/navigation';
 import type {
@@ -29,12 +29,6 @@ interface DocumentSession {
   reading: ReadingDocument;
   bytes: Uint8Array;
 }
-
-const presets = [
-  { name: 'Fold7', shape: 'fold', width: 492, height: 546 },
-  { name: '스마트폰', shape: 'phone', width: 360, height: 640 },
-  { name: 'A5', shape: 'a5', width: 419.53, height: 595.28 },
-] as const;
 
 function safeName(name: string): string {
   return name.replace(/\.pdf$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || 'document';
@@ -450,7 +444,7 @@ function App() {
             </div>
             <p className="preset-label">preset</p>
             <div className="preset-grid">
-              {presets.map((preset) => {
+              {PRESETS.map((preset) => {
                 const active =
                   Math.abs(config.pageWidthPt - preset.width) < 0.05 &&
                   Math.abs(config.pageHeightPt - preset.height) < 0.05;
