@@ -27,6 +27,14 @@ export const PRESETS = [
     height: DEFAULT_CONFIG.pageHeightPt,
   },
   {
+    name: 'iPhone Duo',
+    shape: 'iphone-duo',
+    // Approximate active inner screen, in the device's unfolded landscape orientation.
+    // https://www.apple.com/kr/iphone-duo/specs/ — 2670 × 1878 pixels at 430 PPI.
+    width: (2670 / 430) * 72,
+    height: (1878 / 430) * 72,
+  },
+  {
     name: '몽블랑 디지털 페이퍼',
     shape: 'paper',
     // Approximate active screen size from 1860 × 2480 pixels at the specified 300 PPI.

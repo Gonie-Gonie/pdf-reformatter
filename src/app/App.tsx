@@ -24,8 +24,14 @@ import { Icon } from '../components/Icon';
 import { PdfViewer } from '../components/PdfViewer';
 import { MontblancPresetIcon } from '../components/MontblancPresetIcon';
 import { Fold7PresetIcon } from '../components/Fold7PresetIcon';
+import { IPhoneDuoPresetIcon } from '../components/IPhoneDuoPresetIcon';
 
 type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme'>;
+const presetIcons = {
+  fold: Fold7PresetIcon,
+  'iphone-duo': IPhoneDuoPresetIcon,
+  paper: MontblancPresetIcon,
+};
 type Tab = 'preview' | 'review';
 interface DocumentSession {
   source: SourceDocument;
@@ -448,6 +454,7 @@ function App() {
             <p className="preset-label">preset</p>
             <div className="preset-grid">
               {PRESETS.map((preset) => {
+                const PresetIcon = presetIcons[preset.shape];
                 const active =
                   Math.abs(config.pageWidthPt - preset.width) < 0.05 &&
                   Math.abs(config.pageHeightPt - preset.height) < 0.05;
@@ -465,7 +472,7 @@ function App() {
                       })
                     }
                   >
-                    {preset.shape === 'paper' ? <MontblancPresetIcon /> : <Fold7PresetIcon />}
+                    <PresetIcon />
                     <strong>{preset.name}</strong>
                   </button>
                 );
