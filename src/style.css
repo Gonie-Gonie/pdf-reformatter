@@ -344,13 +344,10 @@ input:focus::-webkit-inner-spin-button {
 .font-option:hover:enabled {
   border-color: #b89b7c;
 }
-.margin-settings {
-  margin-top: 21px;
-}
-.margin-settings-label {
-  margin-bottom: 13px;
-  color: #8b7762;
-  font-size: 11px;
+.settings-subdivider {
+  width: 32px;
+  border-top: 1px solid #ded4c6;
+  margin: 18px 0;
 }
 .text-button {
   display: inline-flex;
@@ -893,11 +890,12 @@ input:focus::-webkit-inner-spin-button {
     margin-top: 22px;
   }
   .welcome-screen {
-    min-height: 430px;
-    min-height: min(600px, calc(100dvh - 106px));
+    min-height: 0;
   }
   .upload-area {
-    min-height: 280px;
+    min-height: 0;
+    padding: 16px 0;
+    gap: 16px;
   }
   .preview-grid {
     grid-template-columns: minmax(0, 1fr);

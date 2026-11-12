@@ -9,7 +9,9 @@ const filenames = [
   'NotoSerif-Regular.ttf',
   'NotoSerif-Bold.ttf',
   'NotoSans-Regular.ttf',
+  'NotoSans-Bold.ttf',
   'NotoSansKR-Regular.ttf',
+  'NotoSansKR-Bold.ttf',
 ];
 const fonts = [];
 for (const filename of filenames) {
@@ -28,8 +30,7 @@ for (const filename of filenames) {
       : `https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/${filename.startsWith('NotoSerif') ? 'NotoSerif' : 'NotoSans'}`,
     ...(filename.includes('KR')
       ? {
-          derivation:
-            'Static weight 400 instance of NotoSansKR[wght].ttf via fontTools 4.55.0; GSUB/GPOS/GDEF/BASE and vertical metrics removed; glyf padding 4 for fontkit subset compatibility. Glyph outlines retained; complex shaping unsupported.',
+          derivation: `Static weight ${filename.includes('Bold') ? 700 : 400} instance of NotoSansKR[wght].ttf via fontTools 4.55.0; GSUB/GPOS/GDEF/BASE and vertical metrics removed; glyf padding 4 for fontkit subset compatibility. Glyph outlines retained; complex shaping unsupported.`,
         }
       : {}),
   });

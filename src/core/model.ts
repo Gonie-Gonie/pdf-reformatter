@@ -137,6 +137,7 @@ export interface LayoutConfig {
   lineHeightPercent: number;
   paragraphGapPt: number;
   autoRotateFigures: boolean;
+  bionicReading: boolean;
   fontFamily: 'serif' | 'sans';
   theme: ColorTheme;
 }
@@ -147,6 +148,8 @@ export interface TextPlacement extends Rect {
   sourcePage: number;
   text: string;
   fontSize: number;
+  /** Highlight word beginnings in reflowed prose; never marks preserved regions. */
+  bionic?: boolean;
   spacing?: TextSpacing[];
   textStart?: number;
   textEnd?: number;

@@ -2,6 +2,7 @@ import { strToU8, zipSync } from 'fflate';
 import type { Zippable } from 'fflate';
 import { colorTheme } from '../../core/color-themes';
 import { DEFAULT_CONFIG, validateConfig } from '../../core/config';
+import { bionicBlock, bionicSegments } from '../../core/bionic-reading';
 import { inlineContent, normalizedLength } from '../../core/inline-content';
 import type {
   BlockAnchor,
@@ -26,6 +27,7 @@ export interface EpubFont {
   path: string;
   bytes: Uint8Array;
   family: 'primary' | 'korean';
+  weight?: 'normal' | 'bold';
   mediaType?: string;
 }
 
@@ -244,6 +246,30 @@ export function buildEpub(
   const renderText = (block: ReadingBlock, file: string): string => {
     const formulae = [...inlineContent(block).atoms.values()];
     const references = [...(links.get(block.id) ?? [])].sort((a, b) => a.start - b.start);
+    let textOffset = 0;
+    const emphasis =
+      config.bionicReading && bionicBlock(block)
+        ? bionicSegments(block.text).flatMap((segment) => {
+            const start = textOffset;
+            textOffset += segment.text.length;
+            return segment.bold ? [{ start, end: textOffset }] : [];
+          })
+        : [];
+    // Keep source offsets across links and formula images, so a split word
+    // does not acquire a second artificial emphasis point.
+    const formattedText = (start: number, end: number) => {
+      let value = '';
+      let cursor = start;
+      for (const range of emphasis) {
+        const from = Math.max(start, range.start);
+        const to = Math.min(end, range.end);
+        if (from >= to) continue;
+        value += textNode(block.text.slice(cursor, from));
+        value += `<b class="bionic">${textNode(block.text.slice(from, to))}</b>`;
+        cursor = to;
+      }
+      return value + textNode(block.text.slice(cursor, end));
+    };
     let result = '';
     let position = 0;
     const emitted = new Set<string>();
@@ -252,13 +278,13 @@ export function buildEpub(
       let cursor = start;
       for (const reference of references) {
         if (reference.start < start || reference.end > end) continue;
-        value += textNode(block.text.slice(cursor, reference.start));
-        const label = textNode(block.text.slice(reference.start, reference.end));
+        value += formattedText(cursor, reference.start);
+        const label = formattedText(reference.start, reference.end);
         value += emitted.has(reference.id) ? label : wrapLink(label, reference, file);
         emitted.add(reference.id);
         cursor = reference.end;
       }
-      return value + textNode(block.text.slice(cursor, end));
+      return value + formattedText(cursor, end);
     };
     for (const atom of formulae) {
       result += plain(position, atom.math.start);
@@ -365,7 +391,7 @@ export function buildEpub(
   const fontFaces = fonts
     .map(
       (font) =>
-        `@font-face{font-family:"Reflow ${font.family === 'primary' ? 'Primary' : 'Korean'}";src:url("${resourcePath(font.path)}");font-weight:normal;font-style:normal;}`,
+        `@font-face{font-family:"Reflow ${font.family === 'primary' ? 'Primary' : 'Korean'}";src:url("${resourcePath(font.path)}");font-weight:${font.weight ?? 'normal'};font-style:normal;}`,
     )
     .join('\n');
   const css = `${fontFaces}
@@ -380,6 +406,7 @@ h2{font-size:1.35em;}h3,h4,h5,h6{font-size:1.2em;}
 .inline-math{display:inline-block;max-width:100%;height:auto;margin:0;}
 .caption,.reference,.footnote{font-size:.92em;}.keep-together{break-inside:avoid;page-break-inside:avoid;}
 a{color:inherit;}.backlink{white-space:nowrap;text-decoration:none;}.backlinks{margin-left:.35em;}
+.bionic{font-weight:bold;}
 .image-references{margin:.2em 0 .6em;font-size:.85em;}.image-references a{margin-right:.35em;}
 `;
 

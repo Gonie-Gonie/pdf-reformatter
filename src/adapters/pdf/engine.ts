@@ -13,10 +13,11 @@ import { graphicObjectBounds, joinGraphicObjects } from './graphic-objects';
 import { visibleTextItems } from './text-visibility';
 import { readTextAlignments } from './alignment';
 import { textSegments } from '../../core/text-alignment';
+import { bionicBlock, bionicSegments } from '../../core/bionic-reading';
 import { validateConfig } from '../../core/config';
 import { colorTheme } from '../../core/color-themes';
 import { flowingText } from '../../core/inline-content';
-import { recolorMathPixels } from './math-raster';
+import { recolorMathPixels, recolorPreservedTextPixels } from './math-raster';
 import { collectCriticalIssues } from '../../core/issues';
 import { buildEpub } from '../epub/package';
 import type { EpubAssets } from '../epub/package';
@@ -420,7 +421,13 @@ export async function exportPdf(
   output.registerFontkit(fontkit);
   const family = config.fontFamily === 'sans' ? 'NotoSans-Regular.ttf' : 'NotoSerif-Regular.ttf';
   const primary = await output.embedFont(await fontBytes(family), { subset: true });
+  const hasBionic = config.bionicReading && effective.blocks.some(bionicBlock);
+  const boldFamily = family.replace('-Regular.ttf', '-Bold.ttf');
+  const primaryBold = hasBionic
+    ? await output.embedFont(await fontBytes(boldFamily), { subset: true })
+    : undefined;
   let korean: Awaited<ReturnType<typeof output.embedFont>> | undefined;
+  let koreanBold: typeof korean;
   const primarySet = new Set(primary.getCharacterSet());
   const allText = effective.blocks
     .filter((block) => block.kind !== 'sourceRegion')
@@ -429,13 +436,21 @@ export async function exportPdf(
   if ([...allText].some((char) => !primarySet.has(char.codePointAt(0)!) && !/\s/u.test(char))) {
     progress({ stage: 'laying-out', current: 0, total: 1, message: '글꼴 준비 중' });
     korean = await output.embedFont(await fontBytes('NotoSansKR-Regular.ttf'), { subset: true });
+    if (hasBionic)
+      koreanBold = await output.embedFont(await fontBytes('NotoSansKR-Bold.ttf'), { subset: true });
   }
   const koreanSet = new Set(korean?.getCharacterSet() ?? []);
-  const fontFor = (char: string) =>
+  const primaryBoldSet = new Set(primaryBold?.getCharacterSet() ?? []);
+  const koreanBoldSet = new Set(koreanBold?.getCharacterSet() ?? []);
+  const fontFor = (char: string, bold: boolean) =>
     primarySet.has(char.codePointAt(0)!)
-      ? primary
+      ? bold && primaryBoldSet.has(char.codePointAt(0)!)
+        ? primaryBold!
+        : primary
       : koreanSet.has(char.codePointAt(0)!)
-        ? korean!
+        ? bold && koreanBoldSet.has(char.codePointAt(0)!)
+          ? koreanBold!
+          : korean!
         : primary;
   const renderOverrides: Overrides = { ...overrides };
   for (const block of effective.blocks) {
@@ -457,19 +472,29 @@ export async function exportPdf(
       renderOverrides[block.id] = { ...overrides[block.id], kind: 'sourceRegion' };
     }
   }
-  const runs = (text: string) => {
+  const runs = (text: string, bionic = false, context = text) => {
     const result: { text: string; font: typeof primary }[] = [];
     // Fontkit hides a discretionary hyphen even when the line break was selected.
-    for (const char of text.replace(/\u00ad/gu, '-')) {
-      const font = fontFor(char);
-      const last = result.at(-1);
-      if (last?.font === font) last.text += char;
-      else result.push({ text: char, font });
+    const display = context.replace(/\u00ad/gu, '-');
+    const segments = bionic ? bionicSegments(display) : [{ text: display, bold: false }];
+    let remaining = text.length;
+    for (const segment of segments) {
+      for (const char of segment.text.slice(0, remaining)) {
+        const font = fontFor(char, segment.bold);
+        const last = result.at(-1);
+        if (last?.font === font) last.text += char;
+        else result.push({ text: char, font });
+      }
+      remaining -= segment.text.length;
+      if (remaining <= 0) break;
     }
     return result;
   };
-  const measure = (text: string, size: number) =>
-    runs(text).reduce((sum, run) => sum + run.font.widthOfTextAtSize(run.text, size), 0);
+  const measure = (text: string, size: number, bionic = false, context?: string) =>
+    runs(text, bionic, context).reduce(
+      (sum, run) => sum + run.font.widthOfTextAtSize(run.text, size),
+      0,
+    );
   progress({ stage: 'laying-out', current: 0, total: 1, message: '페이지 구성 중' });
   const layout = layoutDocument(effective, config, measure, scopedSource);
   const inBounds = layout.pages.every((page) =>
@@ -524,8 +549,16 @@ export async function exportPdf(
       for (const placement of pageLayout.placements) {
         if (placement.type === 'text') {
           let x = placement.x;
+          const styled = runs(placement.text, placement.bionic);
+          let offset = 0;
           for (const segment of textSegments(placement.text, placement.spacing)) {
-            for (const run of runs(segment.text)) {
+            let start = 0;
+            for (const styledRun of styled) {
+              const from = Math.max(0, offset - start);
+              const to = Math.min(styledRun.text.length, offset + segment.text.length - start);
+              start += styledRun.text.length;
+              if (to <= from) continue;
+              const run = { ...styledRun, text: styledRun.text.slice(from, to) };
               page.drawText(run.text, {
                 x,
                 y: config.pageHeightPt - placement.y - placement.fontSize,
@@ -536,6 +569,7 @@ export async function exportPdf(
               x += run.font.widthOfTextAtSize(run.text, placement.fontSize);
             }
             x += segment.extraAfter;
+            offset += segment.text.length;
           }
         } else {
           const original = await input.getPage(placement.sourcePage);
@@ -577,7 +611,23 @@ export async function exportPdf(
             const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
             if (recolorMathPixels(pixels.data, canvas.width, canvas.height, theme.foreground))
               context.putImageData(pixels, 0, 0);
-          } else canvas = await raster(original, scale, placement.sourceRect);
+          } else {
+            canvas = await raster(original, scale, placement.sourceRect);
+            const block = blocks.get(placement.blockId);
+            if (block?.semantic === 'toc' || block?.semantic === 'index') {
+              const context = canvas.getContext('2d', { willReadFrequently: true })!;
+              const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+              if (
+                recolorPreservedTextPixels(
+                  pixels.data,
+                  canvas.width,
+                  canvas.height,
+                  theme.foreground,
+                )
+              )
+                context.putImageData(pixels, 0, 0);
+            }
+          }
           const rotation =
             !placement.math && !placement.decoration ? placement.rotation : undefined;
           if (rotation) canvas = rotateRaster(canvas, rotation);
@@ -634,12 +684,32 @@ export async function exportPdf(
       progress({ stage: 'exporting', current: 0, total: 1, message: 'EPUB 생성 중' });
       epubAssets.fonts = [
         { path: `fonts/${family}`, bytes: await fontBytes(family), family: 'primary' },
+        ...(primaryBold
+          ? [
+              {
+                path: `fonts/${boldFamily}`,
+                bytes: await fontBytes(boldFamily),
+                family: 'primary' as const,
+                weight: 'bold' as const,
+              },
+            ]
+          : []),
         ...(korean
           ? [
               {
                 path: 'fonts/NotoSansKR-Regular.ttf',
                 bytes: await fontBytes('NotoSansKR-Regular.ttf'),
                 family: 'korean' as const,
+              },
+            ]
+          : []),
+        ...(koreanBold
+          ? [
+              {
+                path: 'fonts/NotoSansKR-Bold.ttf',
+                bytes: await fontBytes('NotoSansKR-Bold.ttf'),
+                family: 'korean' as const,
+                weight: 'bold' as const,
               },
             ]
           : []),

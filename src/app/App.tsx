@@ -31,7 +31,10 @@ import {
   IPadAirPresetIcon,
 } from '../components/TabletPresetIcons';
 
-type NumericConfig = Exclude<keyof LayoutConfig, 'fontFamily' | 'theme' | 'autoRotateFigures'>;
+type NumericConfig = Exclude<
+  keyof LayoutConfig,
+  'fontFamily' | 'theme' | 'autoRotateFigures' | 'bionicReading'
+>;
 type Preset = (typeof PRESETS)[number];
 const presetIcons = {
   fold: Fold7PresetIcon,
@@ -580,20 +583,19 @@ function App() {
               {numberField('fontSizePt', '글자 크기', false, 0.5)}
               {numberField('lineHeightPercent', '줄간격', false, 10)}
             </div>
-            <div className="margin-settings">
-              <p className="margin-settings-label">여백과 문단</p>
-              <div className="field-pair">
-                {numberField('marginTopPt', '위 여백', true)}
-                {numberField('marginBottomPt', '아래 여백', true)}
-                {numberField('marginLeftPt', '왼쪽 여백', true)}
-                {numberField('marginRightPt', '오른쪽 여백', true)}
-                {numberField('paragraphGapPt', '문단 간격')}
-              </div>
+            <div className="settings-subdivider" aria-hidden="true" />
+            <div className="field-pair">
+              {numberField('marginTopPt', '위 여백', true)}
+              {numberField('marginBottomPt', '아래 여백', true)}
+              {numberField('marginLeftPt', '왼쪽 여백', true)}
+              {numberField('marginRightPt', '오른쪽 여백', true)}
             </div>
+            <div className="settings-subdivider" aria-hidden="true" />
+            <div className="field-pair">{numberField('paragraphGapPt', '문단 간격')}</div>
           </section>
           <section className="settings-section" aria-labelledby="auto-adjust-heading">
             <div className="section-label">
-              <h2 id="auto-adjust-heading">자동조정</h2>
+              <h2 id="auto-adjust-heading">조정</h2>
             </div>
             <label className="automatic-option">
               <input
@@ -604,6 +606,16 @@ function App() {
                 }
               />
               <span>큰 표·그림 자동 회전</span>
+            </label>
+            <label className="automatic-option">
+              <input
+                type="checkbox"
+                checked={config.bionicReading}
+                onChange={(event) =>
+                  changeConfig({ ...config, bionicReading: event.target.checked })
+                }
+              />
+              <span>바이오닉 리딩 적용</span>
             </label>
           </section>
           <button className="text-button reset-button" onClick={resetConfig}>

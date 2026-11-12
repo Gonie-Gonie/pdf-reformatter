@@ -1,6 +1,6 @@
 import type { SourceText, TextAlignment, TextPlacement, TextSpacing } from './model';
 
-type MeasureText = (text: string, size: number) => number;
+type MeasureText = (text: string, size: number, bionic?: boolean, context?: string) => number;
 const segmenter = new Intl.Segmenter('und', { granularity: 'grapheme' });
 const cjk = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]\p{Mark}*$/u;
 
@@ -73,13 +73,13 @@ export function textSegments(
 
 /** Use the same advances for source anchors, line numbers and clickable note references. */
 export function textAdvance(
-  placement: Pick<TextPlacement, 'text' | 'fontSize' | 'spacing'>,
+  placement: Pick<TextPlacement, 'text' | 'fontSize' | 'spacing' | 'bionic'>,
   offset: number,
   measure: MeasureText,
 ): number {
   const end = Math.max(0, Math.min(placement.text.length, Number.isFinite(offset) ? offset : 0));
   return (
-    measure(placement.text.slice(0, end), placement.fontSize) +
+    measure(placement.text.slice(0, end), placement.fontSize, placement.bionic, placement.text) +
     validSpacing(placement.text, placement.spacing ?? [])
       .filter((gap) => gap.after <= end)
       .reduce((sum, gap) => sum + gap.extra, 0)

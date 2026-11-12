@@ -30,6 +30,16 @@
     "source": "https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/NotoSans"
   },
   {
+    "filename": "NotoSans-Bold.ttf",
+    "bytes": 575740,
+    "sha256": "c976e4b1b99edc88775377fcc21692ca4bfa46b6d6ca6522bfda505b28ff9d6a",
+    "family": "Noto Sans",
+    "version": "Version 2.008; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+    "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+    "license": "OFL-1.1",
+    "source": "https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/NotoSans"
+  },
+  {
     "filename": "NotoSansKR-Regular.ttf",
     "bytes": 6092804,
     "sha256": "b5cf05ddd7caab52e978b969bf8cd1adba5f8875aa4e07d40b996c74189c63f7",
@@ -39,5 +49,16 @@
     "license": "OFL-1.1",
     "source": "https://github.com/google/fonts/tree/main/ofl/notosanskr",
     "derivation": "Static weight 400 instance of NotoSansKR[wght].ttf via fontTools 4.55.0; GSUB/GPOS/GDEF/BASE and vertical metrics removed; glyf padding 4 for fontkit subset compatibility. Glyph outlines retained; complex shaping unsupported."
+  },
+  {
+    "filename": "NotoSansKR-Bold.ttf",
+    "bytes": 6086324,
+    "sha256": "d112b26b4688315aa3811da4d2954f267e3cf12bca12aeb1fe988b754c6e6bc2",
+    "family": "Noto Sans KR",
+    "version": "Version 2.004-H2;hotconv 1.0.118;makeotfexe 2.5.65603",
+    "copyright": "(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.",
+    "license": "OFL-1.1",
+    "source": "https://github.com/google/fonts/tree/main/ofl/notosanskr",
+    "derivation": "Static weight 700 instance of NotoSansKR[wght].ttf via fontTools 4.55.0; GSUB/GPOS/GDEF/BASE and vertical metrics removed; glyf padding 4 for fontkit subset compatibility. Glyph outlines retained; complex shaping unsupported."
   }
 ]

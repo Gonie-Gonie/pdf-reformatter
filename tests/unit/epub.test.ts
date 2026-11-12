@@ -61,6 +61,137 @@ function unpack(blocks: ReadingBlock[], resources = assets(), document = source(
 }
 
 describe('reflowable EPUB export', () => {
+  it.each([false, true])(
+    'preserves text, markup boundaries and visual regions with bionic reading %s',
+    (bionicReading) => {
+      const value = 'Readable <script>& "words" and e\u0301tudes.\nNext paragraph?';
+      const bytes = buildEpub(
+        source(),
+        reading([
+          block('heading', 'A heading keeps its own typography.', { kind: 'heading' }),
+          block('body', value),
+          block('list', 'Ordinary list content.', { kind: 'list' }),
+          block('note', 'A readable footnote.', { kind: 'footnote' }),
+          block('reference', 'Smith, 2026. An original reference.', { kind: 'reference' }),
+          block('caption', 'Figure 1. Original figure title.', { kind: 'caption' }),
+          block('figure', 'Diagram labels.', { kind: 'sourceRegion' }),
+        ]),
+        { ...DEFAULT_CONFIG, bionicReading },
+        assets({
+          images: new Map([
+            ['figure', { path: 'images/figure.png', bytes: png, width: 400, height: 200 }],
+          ]),
+        }),
+      );
+      const files = unzipSync(bytes);
+      const chapter = strFromU8(files['EPUB/text/chapter-0001.xhtml']);
+      const body = chapter.match(/<p id="b2"[^>]*>([\s\S]*?)<\/p>/u)![1];
+      const plain = body.replace(/<b class="bionic">|<\/b>/gu, '');
+      expect(plain).toBe(
+        'Readable &lt;script&gt;&amp; &quot;words&quot; and e\u0301tudes.<br/>Next paragraph?',
+      );
+      for (const id of ['b2', 'b3', 'b4', 'b5']) {
+        const content = chapter.match(
+          new RegExp(`<(?:p|li|aside) id="${id}"[^>]*>([\\s\\S]*?)<\\/(?:p|li|aside)>`, 'u'),
+        )![1];
+        expect(content.includes('<b class="bionic">')).toBe(bionicReading);
+      }
+      expect(chapter).toContain('>A heading keeps its own typography.</h2>');
+      expect(chapter).toContain('>Figure 1. Original figure title.</p>');
+      expect(chapter).toContain('alt="Diagram labels."');
+      expect(chapter).not.toContain('<script>');
+      expect(files['EPUB/images/figure.png']).toEqual(png);
+    },
+  );
+
+  it('keeps a word-wide fixation across a note link and leaves inline math untouched', () => {
+    const value = 'Extraordinary R² remains readable.';
+    const start = value.indexOf('R²');
+    const bytes = buildEpub(
+      source(),
+      reading(
+        [
+          block('body', value, {
+            inlineMath: [
+              {
+                start,
+                end: start + 2,
+                sourceIds: ['math'],
+                rect: { x: 100, y: 80, width: 12, height: 13.5 },
+                baselineY: 89,
+                fontSize: 10,
+              },
+            ],
+          }),
+          block('note', 'A linked footnote.', { semantic: 'note', noteLabel: '1' }),
+        ],
+        {
+          references: [
+            {
+              id: 'word-reference',
+              source: { blockId: 'body', offset: 10 },
+              targetBlockId: 'note',
+            },
+          ],
+        },
+      ),
+      { ...DEFAULT_CONFIG, bionicReading: true },
+      assets({
+        images: new Map([
+          [
+            `body:math:${start}`,
+            { path: 'images/math.png', bytes: png, width: 12, height: 13.5, baseline: 9 },
+          ],
+        ]),
+      }),
+    );
+    const files = unzipSync(bytes);
+    const chapter = strFromU8(files['EPUB/text/chapter-0001.xhtml']);
+    expect(chapter).toContain('role="doc-noteref">a</a>ry <img class="inline-math"');
+    expect(chapter).toContain('alt="R²" style="width:1.2em;vertical-align:-0.45em;"/>');
+    expect(chapter.match(/alt="R²"/gu)).toHaveLength(1);
+    expect(chapter.match(/id="ref1"/gu)).toHaveLength(1);
+    expect(chapter).toContain('href="#ref1" role="doc-backlink"');
+    expect(files['EPUB/images/math.png']).toEqual(png);
+  });
+
+  it('embeds distinct regular and bold font faces for bionic text', () => {
+    const bytes = buildEpub(
+      source(),
+      reading([block('body', 'Readable body content.')]),
+      { ...DEFAULT_CONFIG, bionicReading: true },
+      assets({
+        fonts: [
+          { path: 'fonts/body.ttf', bytes: Uint8Array.from([0, 1]), family: 'primary' },
+          {
+            path: 'fonts/body-bold.ttf',
+            bytes: Uint8Array.from([0, 2]),
+            family: 'primary',
+            weight: 'bold',
+          },
+          {
+            path: 'fonts/korean-bold.ttf',
+            bytes: Uint8Array.from([0, 3]),
+            family: 'korean',
+            weight: 'bold',
+          },
+        ],
+      }),
+    );
+    const files = unzipSync(bytes);
+    const css = strFromU8(files['EPUB/styles.css']);
+    expect(css).toContain('src:url("fonts/body.ttf");font-weight:normal;');
+    expect(css).toContain('src:url("fonts/body-bold.ttf");font-weight:bold;');
+    expect(css).toContain(
+      'font-family:"Reflow Korean";src:url("fonts/korean-bold.ttf");font-weight:bold;',
+    );
+    expect(css).toContain('.bionic{font-weight:bold;}');
+    expect(files['EPUB/fonts/body-bold.ttf']).toEqual(Uint8Array.from([0, 2]));
+    expect(strFromU8(files['EPUB/package.opf'])).toContain(
+      'href="fonts/body-bold.ttf" media-type="font/ttf"',
+    );
+  });
+
   it.each([10, 20])('keeps a 1.5 line-spacing ratio when the body font is %i pt', (fontSizePt) => {
     const bytes = buildEpub(
       source(),

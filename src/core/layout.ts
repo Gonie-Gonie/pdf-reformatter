@@ -18,8 +18,14 @@ import type { InlineAtom } from './inline-content';
 import { wrapParagraph } from './paragraph-wrap';
 import { regionRectToOutput } from './navigation';
 import { fitRotatedRegion } from './auto-rotation';
+import { bionicBlock } from './bionic-reading';
 
-export type MeasureText = (text: string, fontSize: number) => number;
+export type MeasureText = (
+  text: string,
+  fontSize: number,
+  bionic?: boolean,
+  context?: string,
+) => number;
 const closingPunctuation =
   /^[,.;:!?\u3001\u3002\uff0c\uff0e\uff01\uff1f\u300d\u300f\u300b\u3009\uff09\]\)]/u;
 
@@ -210,7 +216,10 @@ export function findLayoutAnchor(
           0.1,
           Math.min(
             placement.x + placement.width - x,
-            measure(located.character, placement.fontSize),
+            placement.bionic
+              ? textAdvance(placement, located.prefix.length + located.character.length, measure) -
+                  textAdvance(placement, located.prefix.length, measure)
+              : measure(located.character, placement.fontSize),
           ),
         ),
         height: Math.min(placement.height, placement.fontSize),
@@ -557,6 +566,8 @@ export function layoutDocument(
       continue;
     }
     if (!block.text.trim()) continue;
+    const bionic = config.bionicReading && bionicBlock(block);
+    const blockMeasure: MeasureText = bionic ? (text, size) => measure(text, size, true) : measure;
     const size = fontSize(block.kind, config.fontSizePt);
     const leading = (size * config.lineHeightPercent) / 100;
     const indent = block.kind === 'list' ? Math.min(size, width * 0.08) : 0;
@@ -579,10 +590,11 @@ export function layoutDocument(
       ? (text, fontSize) =>
           inlineFragments(text, content.atoms).reduce(
             (sum, part) =>
-              sum + (part.atom ? atomSizes.get(part.atom)!.width : measure(part.text, fontSize)),
+              sum +
+              (part.atom ? atomSizes.get(part.atom)!.width : blockMeasure(part.text, fontSize)),
             0,
           )
-      : measure;
+      : blockMeasure;
     const wrap = block.kind === 'paragraph' ? wrapParagraph : wrapText;
     const lines = wrap(content.text, width - indent, size, flowMeasure);
     if (!lines.length) continue;
@@ -679,6 +691,7 @@ export function layoutDocument(
               sourcePage: block.sourcePage,
               text,
               fontSize: size,
+              ...(bionic ? { bionic: true } : {}),
               ...(spacing.length ? { spacing } : {}),
               textStart: textOffset,
               textEnd: textOffset + normalized(text).length,
@@ -708,7 +721,7 @@ export function layoutDocument(
                   });
                   x += box.width;
                 } else {
-                  const partWidth = measure(part.text, size);
+                  const partWidth = blockMeasure(part.text, size);
                   if (part.text.trim())
                     page!.placements.push({
                       type: 'text',
@@ -716,6 +729,7 @@ export function layoutDocument(
                       sourcePage: block.sourcePage,
                       text: part.text,
                       fontSize: size,
+                      ...(bionic ? { bionic: true } : {}),
                       textStart: textOffset,
                       textEnd: textOffset + normalized(part.text).length,
                       x,

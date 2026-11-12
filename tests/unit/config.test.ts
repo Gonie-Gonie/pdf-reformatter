@@ -19,3 +19,20 @@ describe('automatic rotation configuration', () => {
     },
   );
 });
+
+describe('bionic reading configuration', () => {
+  it('starts disabled and preserves an explicit opt-in', () => {
+    expect(DEFAULT_CONFIG.bionicReading).toBe(false);
+    expect(validateConfig(DEFAULT_CONFIG).bionicReading).toBe(false);
+    expect(validateConfig({ ...DEFAULT_CONFIG, bionicReading: true }).bionicReading).toBe(true);
+  });
+
+  it.each([undefined, null, 'true', 'false', 0, 1, {}])(
+    'rejects a non-boolean bionic reading setting %j',
+    (value) => {
+      expect(() => validateConfig({ ...DEFAULT_CONFIG, bionicReading: value })).toThrow(
+        '바이오닉 리딩 설정',
+      );
+    },
+  );
+});

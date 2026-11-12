@@ -19,6 +19,7 @@ export const DEFAULT_CONFIG: LayoutConfig = {
   lineHeightPercent: 160,
   paragraphGapPt: 8,
   autoRotateFigures: true,
+  bionicReading: false,
   fontFamily: 'serif',
   theme: 'warm',
 };
@@ -70,7 +71,7 @@ export const PRESETS = [
 ] as const;
 
 const labels: Record<
-  keyof Omit<LayoutConfig, 'fontFamily' | 'theme' | 'autoRotateFigures'>,
+  keyof Omit<LayoutConfig, 'fontFamily' | 'theme' | 'autoRotateFigures' | 'bionicReading'>,
   string
 > = {
   pageWidthPt: '페이지 가로',
@@ -102,6 +103,9 @@ export function validateConfig(value: unknown): LayoutConfig {
   }
   if (typeof input.autoRotateFigures !== 'boolean') {
     throw new RangeError('큰 표·그림 자동 회전 설정은 참 또는 거짓이어야 합니다.');
+  }
+  if (typeof input.bionicReading !== 'boolean') {
+    throw new RangeError('바이오닉 리딩 설정은 참 또는 거짓이어야 합니다.');
   }
   if (!COLOR_THEMES.some((theme) => theme.id === input.theme)) {
     throw new RangeError('지원하지 않는 색상 설정입니다.');
@@ -143,6 +147,7 @@ export function validateConfig(value: unknown): LayoutConfig {
     lineHeightPercent: config.lineHeightPercent,
     paragraphGapPt: config.paragraphGapPt,
     autoRotateFigures: config.autoRotateFigures,
+    bionicReading: config.bionicReading,
     fontFamily: config.fontFamily,
     theme: config.theme,
   };

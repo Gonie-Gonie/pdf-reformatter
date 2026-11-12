@@ -91,49 +91,54 @@ const jobs = (page: Page) => page.evaluate(() => window.previewWorkers.jobs);
 const release = (page: Page, id: number) =>
   page.evaluate((job) => window.previewWorkers.release(job), id);
 
-test('automatic figure rotation defaults on, cancels older previews, and resets to on', async ({
-  page,
-}) => {
-  await holdConversions(page);
-  await page.goto('');
-  const section = page.getByRole('region', { name: '자동조정', exact: true });
-  const rotation = section.getByRole('checkbox', { name: '큰 표·그림 자동 회전', exact: true });
-  await expect(rotation).toBeChecked();
-  await page
-    .locator('#pdf-file-input')
-    .setInputFiles(resolve('.cache/fixtures/mixed-document.pdf'));
-  await expect.poll(async () => (await jobs(page)).length, { timeout: 60_000 }).toBe(1);
-  const initial = (await jobs(page))[0];
-  expect(initial.config.autoRotateFigures).toBe(true);
+for (const setting of [
+  { name: '큰 표·그림 자동 회전', key: 'autoRotateFigures', enabled: true },
+  { name: '바이오닉 리딩 적용', key: 'bionicReading', enabled: false },
+] as const) {
+  test(`${setting.key} cancels older previews and resets to its default`, async ({ page }) => {
+    await holdConversions(page);
+    await page.goto('');
+    const section = page.getByRole('region', { name: '조정', exact: true });
+    const option = section.getByRole('checkbox', { name: setting.name, exact: true });
+    await expect(option).toBeChecked({ checked: setting.enabled });
+    await page
+      .locator('#pdf-file-input')
+      .setInputFiles(resolve('.cache/fixtures/mixed-document.pdf'));
+    await expect.poll(async () => (await jobs(page)).length, { timeout: 60_000 }).toBe(1);
+    const initial = (await jobs(page))[0];
+    expect(initial.config[setting.key]).toBe(setting.enabled);
 
-  await rotation.uncheck();
-  expect((await jobs(page)).find((job) => job.id === initial.id)?.terminated).toBe(true);
-  await expect.poll(async () => (await jobs(page)).at(-1)?.config.autoRotateFigures).toBe(false);
-  const optedOut = (await jobs(page)).at(-1)!;
-  await expect(rotation).not.toBeChecked();
-  await expect(rotation).toBeEnabled();
+    await option.setChecked(!setting.enabled);
+    expect((await jobs(page)).find((job) => job.id === initial.id)?.terminated).toBe(true);
+    await expect
+      .poll(async () => (await jobs(page)).at(-1)?.config[setting.key])
+      .toBe(!setting.enabled);
+    const changed = (await jobs(page)).at(-1)!;
+    await expect(option).toBeChecked({ checked: !setting.enabled });
+    await expect(option).toBeEnabled();
 
-  await page.getByRole('button', { name: '기본 설정으로', exact: true }).click();
-  await expect(rotation).toBeChecked();
-  expect((await jobs(page)).find((job) => job.id === optedOut.id)?.terminated).toBe(true);
-  await expect
-    .poll(async () => {
-      const current = (await jobs(page)).at(-1)!;
-      return [current.id !== optedOut.id, current.config.autoRotateFigures];
-    })
-    .toEqual([true, true]);
-  const latest = (await jobs(page)).at(-1)!;
-  expect(await release(page, initial.id)).toBe(false);
-  expect(await release(page, optedOut.id)).toBe(false);
-  expect(await release(page, latest.id)).toBe(true);
-  await expect(page.locator('[data-scope]')).toHaveAttribute('data-scope', 'preview', {
-    timeout: 60_000,
+    await page.getByRole('button', { name: '기본 설정으로', exact: true }).click();
+    await expect(option).toBeChecked({ checked: setting.enabled });
+    expect((await jobs(page)).find((job) => job.id === changed.id)?.terminated).toBe(true);
+    await expect
+      .poll(async () => {
+        const current = (await jobs(page)).at(-1)!;
+        return [current.id !== changed.id, current.config[setting.key]];
+      })
+      .toEqual([true, setting.enabled]);
+    const latest = (await jobs(page)).at(-1)!;
+    expect(await release(page, initial.id)).toBe(false);
+    expect(await release(page, changed.id)).toBe(false);
+    expect(await release(page, latest.id)).toBe(true);
+    await expect(page.locator('[data-scope]')).toHaveAttribute('data-scope', 'preview', {
+      timeout: 60_000,
+    });
+    expect(
+      (await jobs(page)).find((job) => job.id === latest.id)?.resultConfig?.[setting.key],
+    ).toBe(setting.enabled);
+    await expect(page.locator('.error-message')).toHaveCount(0);
   });
-  expect(
-    (await jobs(page)).find((job) => job.id === latest.id)?.resultConfig?.autoRotateFigures,
-  ).toBe(true);
-  await expect(page.locator('.error-message')).toHaveCount(0);
-});
+}
 
 test('line spacing uses a percentage that stays fixed when font size changes', async ({ page }) => {
   await page.goto('');

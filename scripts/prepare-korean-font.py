@@ -14,13 +14,14 @@ from fontTools.varLib.instancer import instantiateVariableFont
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("input", type=Path, help="Original NotoSansKR[wght].ttf")
-parser.add_argument("output", type=Path, help="Output static NotoSansKR-Regular.ttf")
+parser.add_argument("output", type=Path, help="Output static NotoSansKR TTF")
+parser.add_argument("--weight", type=int, choices=(400, 700), default=400)
 args = parser.parse_args()
 expected_hash = "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252"
 if hashlib.sha256(args.input.read_bytes()).hexdigest() != expected_hash:
     raise SystemExit("Source font hash mismatch; review the font update before preparing it.")
 font = TTFont(args.input, recalcTimestamp=False)
-font = instantiateVariableFont(font, {"wght": 400}, inplace=True, updateFontNames=True)
+font = instantiateVariableFont(font, {"wght": args.weight}, inplace=True, updateFontNames=True)
 font.recalcTimestamp = False
 # pdf-lib writes horizontal PDF text. Remove substitutions with alternate glyphs
 # whose Unicode or width mappings its fontkit adapter cannot reliably retain.

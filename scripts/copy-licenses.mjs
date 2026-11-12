@@ -48,4 +48,5 @@ await cp(
   join(root, 'legal', 'HYPHENATION_EN_US_LICENSE.txt'),
   join(destination, 'HYPHENATION_EN_US_LICENSE.txt'),
 );
+await cp(join(root, 'legal', 'TEXT_VIDE_LICENSE.txt'), join(destination, 'text-vide-LICENSE.txt'));
 console.log(`Copied runtime licenses for ${index.length} installed packages`);
